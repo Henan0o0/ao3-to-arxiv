@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AO3 to arXiv Paper Reader with Zoom
 // @namespace    local.ao3.arxiv.paper.reader.zoom
-// @version      0.7
-// @description  Convert AO3 work pages into an arXiv-like local paper layout with paged two-column rendering, side stamp, header, and zoom controls
+// @version      0.9
+// @description  Convert AO3 work pages into an arXiv like local paper layout with notes separator, better paragraph extraction, pagination, side stamp, header, and zoom controls
 // @match        https://archiveofourown.org/works/*
 // @match        https://www.archiveofourown.org/works/*
 // @run-at       document-idle
@@ -20,7 +20,7 @@
     const ZOOM_STORAGE_KEY = "ao3_arxiv_paper_zoom";
 
     const FONT_SIZE_PX = 16;
-    const LINE_HEIGHT = 1.25;
+    const LINE_HEIGHT = 1.05;
     const LINES_PER_COLUMN = 80;
     const PAGE_WIDTH_PX = 1120;
     const COLUMN_GAP_PX = 38;
@@ -32,6 +32,7 @@
 
     const SHOW_DEBUG = false;
     const SHOW_ABSTRACT = true;
+    const SHOW_NOTES_AS_ABSTRACT = true;
     const SHOW_RUNNING_HEADER = true;
     const SHOW_SIDE_STAMP = true;
 
@@ -43,9 +44,22 @@
         FONT_SIZE_PX * LINE_HEIGHT * LINES_PER_COLUMN
     );
 
+    function normalizeText(text) {
+        return String(text || "")
+            .replace(/\u00a0/g, " ")
+            .replace(/\r/g, "\n")
+            .replace(/[ \t\f\v]+/g, " ")
+            .replace(/\n[ \t]+/g, "\n")
+            .replace(/[ \t]+\n/g, "\n")
+            .replace(/([.!?])(?=[A-Z])/g, "$1 ")
+            .replace(/([。！？])(?=\S)/g, "$1 ")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
     function getCleanText(el) {
         if (!el) return "";
-        return el.textContent.replace(/\s+/g, " ").trim();
+        return normalizeText(el.textContent || "");
     }
 
     function findDtValue(labelPattern) {
@@ -144,19 +158,102 @@
         return dateStr;
     }
 
+    function shouldSkipElement(el) {
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+
+        const selector =
+            ".summary, .meta, .preface, .landmark, .navigation, .actions, #header, #footer, #comments";
+
+        if (el.matches(selector)) return true;
+        if (el.closest(selector)) return true;
+
+        return false;
+    }
+
+    function shouldSkipForAbstract(el) {
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+
+        const selector =
+            ".meta, .landmark, .navigation, .actions, #header, #footer, #comments";
+
+        if (el.matches(selector)) return true;
+        if (el.closest(selector)) return true;
+
+        return false;
+    }
+
+    function htmlToTextParts(el, options = {}) {
+        if (!el) return [];
+
+        const keepNotes = Boolean(options.keepNotes);
+        const clone = el.cloneNode(true);
+
+        const removeSelector = keepNotes
+            ? "script, style, iframe, noscript, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments"
+            : "script, style, iframe, noscript, .notes, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments";
+
+        clone.querySelectorAll(removeSelector).forEach((node) => node.remove());
+
+        let html = clone.innerHTML || "";
+
+        html = html
+            .replace(/<hr[^>]*>/gi, "\n[[AO3_HR]]\n")
+            .replace(/<br\s*\/?>/gi, "\n")
+            .replace(/<\/p>/gi, "\n")
+            .replace(/<\/div>/gi, "\n")
+            .replace(/<\/blockquote>/gi, "\n")
+            .replace(/<\/li>/gi, "\n")
+            .replace(/<\/h[1-4]>/gi, "\n");
+
+        const temp = document.createElement("div");
+        temp.innerHTML = html;
+
+        const text = temp.textContent || "";
+
+        return text
+            .split(/\n+/)
+            .map((part) => normalizeText(part))
+            .filter((part) => part.length > 0);
+    }
+
     function extractAbstractText() {
-        const candidates = [
+        const summaryCandidates = [
             ".summary .userstuff",
             ".summary blockquote",
-            ".summary",
+            ".summary"
+        ];
+
+        for (const selector of summaryCandidates) {
+            const el = document.querySelector(selector);
+            const parts = htmlToTextParts(el, { keepNotes: false });
+            const text = parts
+                .filter((part) => part !== "[[AO3_HR]]")
+                .join(" ");
+
+            if (text.length > 40) {
+                return text;
+            }
+        }
+
+        if (!SHOW_NOTES_AS_ABSTRACT) {
+            return "";
+        }
+
+        const noteCandidates = [
             ".chapter.preface .notes .userstuff",
             ".preface .notes .userstuff",
             ".notes .userstuff"
         ];
 
-        for (const selector of candidates) {
+        for (const selector of noteCandidates) {
             const el = document.querySelector(selector);
-            const text = getCleanText(el);
+            if (!el || shouldSkipForAbstract(el)) continue;
+
+            const parts = htmlToTextParts(el, { keepNotes: true });
+            const text = parts
+                .filter((part) => part !== "[[AO3_HR]]")
+                .join(" ");
+
             if (text.length > 40) {
                 return text;
             }
@@ -284,7 +381,11 @@
         font-size: ${FONT_SIZE_PX}px;
         line-height: ${LINE_HEIGHT};
         color: #111;
-        text-align: justify;
+        text-align: left;
+        white-space: normal;
+        word-break: normal;
+        overflow-wrap: normal;
+        hyphens: manual;
       }
 
       .ao3-paper-frontmatter {
@@ -366,7 +467,11 @@
         line-height: ${LINE_HEIGHT};
         font-style: normal;
         font-weight: 400;
-        text-align: justify;
+        text-align: left;
+        white-space: normal;
+        word-break: normal;
+        overflow-wrap: normal;
+        hyphens: manual;
       }
 
       .ao3-paper-content p:first-child {
@@ -429,8 +534,9 @@
       .ao3-paper-content hr {
         column-span: all;
         border: none;
-        border-top: 1px solid #999;
-        margin: 1em 0;
+        border-top: 1px solid #888;
+        margin: 1.15em 0 1.15em 0;
+        height: 0;
       }
 
       .ao3-paper-number {
@@ -604,7 +710,7 @@
         indexLabel.textContent = "Index Terms—";
 
         const indexText = document.createTextNode(
-            "Local Reading Mode, Web Fiction, Archive Layout, Two-Column Typesetting."
+            "Local Reading Mode, Web Fiction, Archive Layout, Two Column Typesetting."
         );
 
         index.appendChild(indexLabel);
@@ -619,141 +725,190 @@
         return wrapper;
     }
 
-    function shouldSkipElement(el) {
-        if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
-
-        const selector =
-            ".notes, .summary, .meta, .preface, .landmark, .navigation, .actions, #header, #footer, #comments";
-
-        if (el.matches(selector)) return true;
-        if (el.closest(selector)) return true;
-
-        return false;
+    function makeHorizontalRule() {
+        return document.createElement("hr");
     }
 
-    function findChapterRoot() {
-        const candidates = [
-            "#chapters",
-            "#workskin",
-            ".chapter",
+    function findChapterTextRoots() {
+        const roots = [];
+
+        const selectors = [
+            "#chapters .userstuff",
+            "#workskin .userstuff",
+            ".chapter .userstuff",
             ".userstuff"
         ];
 
-        for (const selector of candidates) {
-            const el = document.querySelector(selector);
-            if (!el) continue;
+        for (const selector of selectors) {
+            const nodes = Array.from(document.querySelectorAll(selector)).filter((el) => {
+                if (shouldSkipElement(el)) return false;
+                return getCleanText(el).length > 120;
+            });
 
-            const text = getCleanText(el);
-            if (text.length > 200) {
-                return el;
+            if (nodes.length > 0) {
+                for (const node of nodes) {
+                    if (!roots.includes(node)) {
+                        roots.push(node);
+                    }
+                }
+
+                break;
             }
         }
 
-        return null;
-    }
-
-    function cleanClone(node) {
-        const clone = node.cloneNode(true);
-
-        if (clone.nodeType !== Node.ELEMENT_NODE) {
-            return clone;
+        if (roots.length > 0) {
+            return roots;
         }
 
-        clone.querySelectorAll("script, style, iframe, noscript").forEach((el) => el.remove());
+        const fallback =
+            document.querySelector("#chapters") ||
+            document.querySelector("#workskin") ||
+            document.querySelector(".chapter");
 
-        clone.querySelectorAll("*").forEach((el) => {
-            el.removeAttribute("style");
-            el.removeAttribute("class");
-            el.removeAttribute("id");
-            el.removeAttribute("onclick");
-            el.removeAttribute("onmouseover");
-            el.removeAttribute("onmouseout");
-        });
+        if (fallback && getCleanText(fallback).length > 200) {
+            return [fallback];
+        }
 
-        clone.removeAttribute("style");
-        clone.removeAttribute("class");
-        clone.removeAttribute("id");
-
-        return clone;
+        return [];
     }
 
     function paragraphFromText(text) {
         const p = document.createElement("p");
-        p.textContent = text.replace(/\s+/g, " ").trim();
+        p.textContent = normalizeText(text);
         return p;
     }
 
     function headingFromText(text, level) {
         const tag = level || "h2";
         const h = document.createElement(tag);
-        h.textContent = text.replace(/\s+/g, " ").trim();
+        h.textContent = normalizeText(text);
         return h;
     }
 
-    function collectBlocksFromNode(node, blocks) {
-        if (!node) return;
+    function collectBlocksFromParagraphs(root) {
+        const blocks = [];
+        const children = Array.from(root.childNodes);
 
-        if (node.nodeType === Node.TEXT_NODE) {
-            const text = node.textContent.replace(/\s+/g, " ").trim();
-            if (text.length > 0) {
-                blocks.push(paragraphFromText(text));
-            }
-            return;
-        }
-
-        if (node.nodeType !== Node.ELEMENT_NODE) return;
-
-        if (shouldSkipElement(node)) return;
-
-        const tag = node.tagName.toLowerCase();
-
-        if (["script", "style", "iframe", "noscript"].includes(tag)) return;
-        if (tag === "br") return;
-
-        if (["p", "blockquote", "ul", "ol", "hr"].includes(tag)) {
-            const cloned = cleanClone(node);
-            const text = getCleanText(cloned);
-
-            if (tag === "hr" || text.length > 0) {
-                blocks.push(cloned);
+        for (const node of children) {
+            if (node.nodeType === Node.TEXT_NODE) {
+                const text = normalizeText(node.textContent);
+                if (text.length > 0) {
+                    blocks.push(paragraphFromText(text));
+                }
+                continue;
             }
 
-            return;
-        }
-
-        if (["h1", "h2", "h3", "h4"].includes(tag)) {
-            const text = getCleanText(node);
-            if (text.length > 0) {
-                blocks.push(headingFromText(text, tag));
+            if (node.nodeType !== Node.ELEMENT_NODE) {
+                continue;
             }
-            return;
+
+            if (shouldSkipElement(node)) {
+                continue;
+            }
+
+            const tag = node.tagName.toLowerCase();
+
+            if (["script", "style", "iframe", "noscript"].includes(tag)) {
+                continue;
+            }
+
+            if (tag === "hr") {
+                blocks.push(makeHorizontalRule());
+                continue;
+            }
+
+            if (tag === "br") {
+                continue;
+            }
+
+            if (tag === "p") {
+                const parts = htmlToTextParts(node, { keepNotes: true });
+
+                for (const part of parts) {
+                    if (part === "[[AO3_HR]]") {
+                        blocks.push(makeHorizontalRule());
+                        continue;
+                    }
+
+                    if (part.length > 0) {
+                        blocks.push(paragraphFromText(part));
+                    }
+                }
+
+                continue;
+            }
+
+            if (["h1", "h2", "h3", "h4"].includes(tag)) {
+                const text = getCleanText(node);
+                if (text.length > 0) {
+                    blocks.push(headingFromText(text, tag));
+                }
+                continue;
+            }
+
+            const nested = collectBlocksFromParagraphs(node);
+            for (const item of nested) {
+                blocks.push(item);
+            }
         }
 
-        Array.from(node.childNodes).forEach((child) => collectBlocksFromNode(child, blocks));
+        return blocks;
+    }
+
+    function collectBlocksFromBreakText(root) {
+        const blocks = [];
+        const parts = htmlToTextParts(root, { keepNotes: true });
+
+        for (const part of parts) {
+            const lower = part.toLowerCase();
+
+            if (part === "[[AO3_HR]]") {
+                blocks.push(makeHorizontalRule());
+                continue;
+            }
+
+            if (lower === "notes") continue;
+            if (lower === "chapter text") continue;
+            if (lower === "end notes") continue;
+
+            blocks.push(paragraphFromText(part));
+        }
+
+        return blocks;
     }
 
     function collectContentBlocks() {
-        const root = findChapterRoot();
-        if (!root) return [];
+        const roots = findChapterTextRoots();
+        const allBlocks = [];
 
-        const blocks = [];
-        collectBlocksFromNode(root, blocks);
+        for (const root of roots) {
+            let blocks = collectBlocksFromParagraphs(root);
 
-        return blocks.filter((block) => {
-            const tag = block.tagName ? block.tagName.toLowerCase() : "";
-            if (tag === "hr") return true;
+            if (blocks.length === 0) {
+                blocks = collectBlocksFromBreakText(root);
+            }
 
-            const text = getCleanText(block);
-            if (text.length === 0) return false;
+            for (const block of blocks) {
+                const tag = block.tagName ? block.tagName.toLowerCase() : "";
 
-            const lower = text.toLowerCase();
+                if (tag === "hr") {
+                    allBlocks.push(block);
+                    continue;
+                }
 
-            if (lower === "notes") return false;
-            if (lower === "chapter text") return false;
-            if (lower === "end notes") return false;
+                const text = getCleanText(block);
+                const lower = text.toLowerCase();
 
-            return true;
-        });
+                if (!text) continue;
+                if (lower === "notes") continue;
+                if (lower === "chapter text") continue;
+                if (lower === "end notes") continue;
+
+                allBlocks.push(block);
+            }
+        }
+
+        return allBlocks;
     }
 
     function splitParagraphNode(p) {
@@ -873,7 +1028,7 @@
         if (SHOW_DEBUG) {
             const debug = document.createElement("div");
             debug.className = "ao3-paper-debug";
-            debug.textContent = `paper mode loaded, paragraphs ${blocks.length}`;
+            debug.textContent = `paper mode loaded, blocks ${blocks.length}`;
             view.appendChild(debug);
         }
 
