@@ -1,5 +1,4 @@
-# ao3-to-arxiv
-# AO3 arXiv Paper Reader
+# AO3-to-arXiv
 
 AO3 arXiv Paper Reader is a Tampermonkey userscript that turns AO3 work pages into a local paper style reading view.
 
