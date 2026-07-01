@@ -367,9 +367,9 @@
         user-select: none;
       }
 
-      .ao3-paper-page:not(.first-page) .ao3-paper-side-stamp {
-        display: none;
-      }
+      .ao3-paper-page .ao3-paper-side-stamp {
+  display: block;
+}
 
       .ao3-paper-content {
         height: ${PAGE_CONTENT_HEIGHT_PX}px;
