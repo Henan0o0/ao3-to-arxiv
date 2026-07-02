@@ -5,6 +5,10 @@
 // @description  Convert AO3 work pages into a local reading view styled after bioRxiv preprint PDFs (visual style reference only; not affiliated with or endorsed by bioRxiv): paginated single-column manuscript layout with a local reading-copy notice banner and continuous margin line numbers.
 // @match        https://archiveofourown.org/works/*
 // @match        https://www.archiveofourown.org/works/*
+// @match        https://archiveofourown.gay/works/*
+// @match        https://www.archiveofourown.gay/works/*
+// @match        https://archive.transformativeworks.org/works/*
+// @match        https://www.archive.transformativeworks.org/works/*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
