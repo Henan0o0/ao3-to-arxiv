@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AO3 to arXiv Paper Reader with Zoom
 // @namespace    local.ao3.arxiv.paper.reader.zoom
-// @version      0.9
-// @description  Convert AO3 work pages into an arXiv like local paper layout with notes separator, better paragraph extraction, pagination, side stamp, header, and zoom controls
+// @version      0.9.7
+// @description  Convert AO3 work pages into an arXiv-like local paper layout with pagination, side stamp, zoom controls, and comment references
 // @match        https://archiveofourown.org/works/*
 // @match        https://www.archiveofourown.org/works/*
 // @match        https://archiveofourown.gay/works/*
@@ -16,6 +16,10 @@
 (function () {
     "use strict";
 
+    /* ============================================================
+     * Basic IDs and localStorage keys
+     * ============================================================ */
+
     const STYLE_ID = "ao3-arxiv-paper-style";
     const VIEW_ID = "ao3-arxiv-paper-view";
     const TOOLBAR_ID = "ao3-arxiv-paper-toolbar";
@@ -23,30 +27,111 @@
     const STORAGE_KEY = "ao3_arxiv_paper_reader_enabled";
     const ZOOM_STORAGE_KEY = "ao3_arxiv_paper_zoom";
 
+    /* ============================================================
+     * Main layout parameters
+     *
+     * FONT_SIZE_PX controls body font size.
+     * LINE_HEIGHT controls line spacing.
+     * LINES_PER_COLUMN controls page height.
+     * PAGE_WIDTH_PX controls paper width.
+     * COLUMN_GAP_PX controls gap between two text columns.
+     * ============================================================ */
+
     const FONT_SIZE_PX = 16;
     const LINE_HEIGHT = 1.05;
     const LINES_PER_COLUMN = 80;
     const PAGE_WIDTH_PX = 1120;
     const COLUMN_GAP_PX = 38;
 
+    /* ============================================================
+     * Zoom parameters
+     * ============================================================ */
+
     const DEFAULT_ZOOM = 1.0;
     const MIN_ZOOM = 0.65;
     const MAX_ZOOM = 1.35;
     const ZOOM_STEP = 0.05;
 
+    /* ============================================================
+     * Feature switches
+     * ============================================================ */
+
     const SHOW_DEBUG = false;
     const SHOW_ABSTRACT = true;
     const SHOW_NOTES_AS_ABSTRACT = true;
     const SHOW_RUNNING_HEADER = true;
+
+    /* ============================================================
+     * Side date stamp controls
+     *
+     * SHOW_SIDE_STAMP:
+     * true means show the vertical side stamp.
+     *
+     * SIDE_STAMP_EVERY_PAGE:
+     * true means every page has the side stamp.
+     * false means only the first page has the side stamp.
+     *
+     * SIDE_STAMP_FONT_SIZE_PX:
+     * controls side stamp font size.
+     * ============================================================ */
+
     const SHOW_SIDE_STAMP = true;
+    const SIDE_STAMP_EVERY_PAGE = false;
+    const SIDE_STAMP_FONT_SIZE_PX = 30;
+
+    /* ============================================================
+     * Comment references controls
+     *
+     * SHOW_COMMENT_REFERENCES:
+     * true means AO3 comments are appended as References.
+     *
+     * COMMENT_REFERENCE_LIMIT:
+     * maximum number of comments included.
+     *
+     * COMMENT_REFERENCE_MAX_CHARS:
+     * maximum length of each comment excerpt.
+     *
+     * FETCH_COMMENTS_IF_MISSING:
+     * true means the script fetches show_comments=true pages if the
+     * current DOM only has a Comments button.
+     * ============================================================ */
+
+    const SHOW_COMMENT_REFERENCES = true;
+    const COMMENT_REFERENCE_LIMIT = 30;
+    const COMMENT_REFERENCE_MAX_CHARS = 220;
+    const FETCH_COMMENTS_IF_MISSING = true;
 
     const JOURNAL_TEXT = "JOURNAL OF LOCAL AO3 CLASS FILES, VOL. 1, NO. 1";
     const SUBJECT_TEXT = "[AO3]";
     const ABSTRACT_TITLE = "Abstract";
 
+    /* ============================================================
+     * Page grid parameters
+     *
+     * The page uses CSS grid.
+     * Left column is reserved for the vertical date stamp.
+     * Right column is reserved for paper text.
+     * ============================================================ */
+
+    const SIDE_STAMP_WIDTH_PX = 60;
+    const PAGE_HEADER_HEIGHT_PX = 24;
+    const PAGE_FOOTER_HEIGHT_PX = 18;
+    const PAGE_ROW_GAP_PX = 12;
+
     const PAGE_CONTENT_HEIGHT_PX = Math.round(
         FONT_SIZE_PX * LINE_HEIGHT * LINES_PER_COLUMN
     );
+
+    const PAGE_HEIGHT_PX =
+        PAGE_HEADER_HEIGHT_PX +
+        PAGE_CONTENT_HEIGHT_PX +
+        PAGE_FOOTER_HEIGHT_PX +
+        PAGE_ROW_GAP_PX * 2 +
+        34;
+
+    /* ============================================================
+     * Text helpers
+     * ============================================================ */
 
     function normalizeText(text) {
         return String(text || "")
@@ -91,6 +176,10 @@
 
         return "";
     }
+
+    /* ============================================================
+     * AO3 metadata extraction
+     * ============================================================ */
 
     function getAO3Meta() {
         const title =
@@ -146,6 +235,7 @@
         if (!dateStr) return "Unknown Date";
 
         const iso = dateStr.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/);
+
         if (iso) {
             const year = iso[1];
             const month = Number(iso[2]);
@@ -162,11 +252,15 @@
         return dateStr;
     }
 
+    /* ============================================================
+     * Node filtering
+     * ============================================================ */
+
     function shouldSkipElement(el) {
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
 
         const selector =
-            ".summary, .meta, .preface, .landmark, .navigation, .actions, #header, #footer, #comments";
+            ".summary, .meta, .preface, .landmark, .navigation, .actions, #header, #footer, #comments, #feedback";
 
         if (el.matches(selector)) return true;
         if (el.closest(selector)) return true;
@@ -178,7 +272,7 @@
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
 
         const selector =
-            ".meta, .landmark, .navigation, .actions, #header, #footer, #comments";
+            ".meta, .landmark, .navigation, .actions, #header, #footer, #comments, #feedback";
 
         if (el.matches(selector)) return true;
         if (el.closest(selector)) return true;
@@ -193,8 +287,8 @@
         const clone = el.cloneNode(true);
 
         const removeSelector = keepNotes
-            ? "script, style, iframe, noscript, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments"
-            : "script, style, iframe, noscript, .notes, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments";
+            ? "script, style, iframe, noscript, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments, #feedback"
+            : "script, style, iframe, noscript, .notes, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments, #feedback";
 
         clone.querySelectorAll(removeSelector).forEach((node) => node.remove());
 
@@ -266,6 +360,10 @@
         return "";
     }
 
+    /* ============================================================
+     * CSS injection
+     * ============================================================ */
+
     function addStyle() {
         if (document.getElementById(STYLE_ID)) return;
 
@@ -289,6 +387,7 @@
       body.ao3-arxiv-paper-mode .share,
       body.ao3-arxiv-paper-mode .comment,
       body.ao3-arxiv-paper-mode #comments,
+      body.ao3-arxiv-paper-mode #feedback,
       body.ao3-arxiv-paper-mode .feedback {
         display: none !important;
       }
@@ -329,22 +428,27 @@
 
       .ao3-paper-page {
         width: ${PAGE_WIDTH_PX}px;
-        height: ${PAGE_CONTENT_HEIGHT_PX + 122}px;
+        height: ${PAGE_HEIGHT_PX}px;
         margin: 0 auto 22px auto;
-        padding: 70px 46px 52px 92px;
+        padding: 18px 46px 16px 22px;
         background: #ffffff;
         border: 1px solid #d0d0d0;
         box-shadow: 0 1px 10px rgba(0, 0, 0, 0.08);
         box-sizing: border-box;
         position: relative;
         overflow: hidden;
+
+        display: grid;
+        grid-template-columns: ${SIDE_STAMP_WIDTH_PX}px minmax(0, 1fr);
+        grid-template-rows: ${PAGE_HEADER_HEIGHT_PX}px ${PAGE_CONTENT_HEIGHT_PX}px ${PAGE_FOOTER_HEIGHT_PX}px;
+        column-gap: 18px;
+        row-gap: ${PAGE_ROW_GAP_PX}px;
       }
 
       .ao3-paper-running-header {
-        position: absolute;
-        top: 18px;
-        left: 92px;
-        right: 46px;
+        grid-column: 2;
+        grid-row: 1;
+        position: static;
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -354,28 +458,35 @@
         text-transform: uppercase;
         letter-spacing: 0.2px;
         white-space: nowrap;
+        min-width: 0;
       }
 
       .ao3-paper-side-stamp {
-        position: absolute;
-        left: 24px;
-        top: 170px;
+        grid-column: 1;
+        grid-row: 2;
+        position: static;
+        align-self: center;
+        justify-self: center;
+
         writing-mode: vertical-rl;
         transform: rotate(180deg);
         font-family: "Times New Roman", Times, serif;
-        font-size: 28px;
+        font-size: ${SIDE_STAMP_FONT_SIZE_PX}px;
         color: #8a8a8a;
         letter-spacing: 1px;
         line-height: 1.1;
         pointer-events: none;
         user-select: none;
+        white-space: nowrap;
+
+        max-height: ${PAGE_CONTENT_HEIGHT_PX}px;
+        overflow: hidden;
       }
 
-      .ao3-paper-page .ao3-paper-side-stamp {
-  display: block;
-}
-
       .ao3-paper-content {
+        grid-column: 2;
+        grid-row: 2;
+        min-width: 0;
         height: ${PAGE_CONTENT_HEIGHT_PX}px;
         column-count: 2;
         column-gap: ${COLUMN_GAP_PX}px;
@@ -543,15 +654,38 @@
         height: 0;
       }
 
+      .ao3-reference-title {
+        column-span: all;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 19px;
+        font-weight: 700;
+        margin: 0.8em 0 0.5em 0;
+        text-align: left;
+        break-after: avoid;
+      }
+
+      .ao3-paper-content p.ao3-reference {
+        font-family: "Times New Roman", Times, serif;
+        font-size: calc(${FONT_SIZE_PX}px * 0.82);
+        line-height: 1.12;
+        text-indent: 0;
+        padding-left: 0;
+        margin: 0 0 0.32em 0;
+        text-align: left;
+        break-inside: auto;
+        overflow-wrap: anywhere;
+        word-break: normal;
+      }
+
       .ao3-paper-number {
-        position: absolute;
-        bottom: 16px;
-        left: 0;
-        right: 0;
+        grid-column: 1 / 3;
+        grid-row: 3;
+        position: static;
         text-align: center;
         font-family: "Times New Roman", Times, serif;
         font-size: 13px;
         color: #555;
+        align-self: end;
       }
 
       #${TOOLBAR_ID} {
@@ -606,8 +740,9 @@
 
         .ao3-paper-page {
           width: calc(100vw - 32px);
-          padding-left: 30px;
-          padding-right: 30px;
+          padding: 18px 30px 16px 16px;
+          grid-template-columns: 76px minmax(0, 1fr);
+          column-gap: 14px;
         }
 
         .ao3-paper-title {
@@ -615,12 +750,33 @@
         }
 
         .ao3-paper-side-stamp {
-          display: none;
+          display: block;
+          font-size: calc(${SIDE_STAMP_FONT_SIZE_PX}px * 0.8);
         }
 
         .ao3-paper-running-header {
-          left: 30px;
-          right: 30px;
+          font-size: 11px;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .ao3-paper-page {
+          grid-template-columns: minmax(0, 1fr);
+          padding-left: 30px;
+          padding-right: 30px;
+        }
+
+        .ao3-paper-side-stamp {
+          display: none;
+        }
+
+        .ao3-paper-running-header,
+        .ao3-paper-content {
+          grid-column: 1;
+        }
+
+        .ao3-paper-number {
+          grid-column: 1;
         }
       }
 
@@ -643,6 +799,10 @@
 
         document.head.appendChild(style);
     }
+
+    /* ============================================================
+     * Page element builders
+     * ============================================================ */
 
     function makeRunningHeader(pageIndex) {
         const header = document.createElement("div");
@@ -733,6 +893,606 @@
         return document.createElement("hr");
     }
 
+    /* ============================================================
+     * Comment extraction and reference formatting
+     *
+     * AO3 comments are tree-structured.
+     * Parent comments may contain child replies.
+     * This section extracts parent and child comments separately.
+     * ============================================================ */
+
+    const COMMENT_WRAPPER_SELECTOR =
+        "li.comment, div.comment, li[id^='comment_'], div[id^='comment_'], li[id*='comment_'], div[id*='comment_']";
+
+    function normalizeCommentText(text) {
+        return normalizeText(text)
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    function truncateText(text, maxChars) {
+        const clean = normalizeCommentText(text);
+
+        if (clean.length <= maxChars) {
+            return clean;
+        }
+
+        return clean.slice(0, maxChars).replace(/\s+\S*$/, "") + "...";
+    }
+
+    function makeCommentReferenceTitle() {
+        const h = document.createElement("h2");
+        h.className = "ao3-reference-title";
+        h.textContent = "References";
+        return h;
+    }
+
+    function makeCommentReferenceItem(index, author, dateText, commentText) {
+        const p = document.createElement("p");
+        p.className = "ao3-reference";
+
+        const safeAuthor = author || "Anonymous";
+        const safeDate = dateText ? `, ${dateText}` : "";
+        const excerpt = truncateText(commentText, COMMENT_REFERENCE_MAX_CHARS);
+
+        p.textContent = `[${index}] ${safeAuthor}. “${excerpt}” AO3 comment${safeDate}.`;
+
+        return p;
+    }
+
+    function getAbsoluteUrl(href) {
+        if (!href) return "";
+
+        try {
+            return new URL(href, location.href).href;
+        } catch (_) {
+            return "";
+        }
+    }
+
+    function addShowCommentsParam(url) {
+        try {
+            const u = new URL(url, location.href);
+            u.searchParams.set("show_comments", "true");
+
+            if (!u.hash) {
+                u.hash = "comments";
+            }
+
+            return u.href;
+        } catch (_) {
+            return "";
+        }
+    }
+
+    function getCommentFetchUrls() {
+        const urls = [];
+
+        function add(url) {
+            if (!url) return;
+            if (!urls.includes(url)) urls.push(url);
+        }
+
+        add(addShowCommentsParam(location.href));
+
+        const commentLinks = Array.from(document.querySelectorAll("a")).filter((a) => {
+            const text = getCleanText(a).toLowerCase();
+            const href = a.getAttribute("href") || "";
+
+            return (
+                text.includes("comment") ||
+                href.includes("show_comments") ||
+                href.includes("#comments") ||
+                href.includes("/comments/")
+            );
+        });
+
+        for (const a of commentLinks) {
+            const href = a.getAttribute("href") || "";
+            const abs = getAbsoluteUrl(href);
+
+            if (!abs) continue;
+
+            add(addShowCommentsParam(abs));
+            add(abs);
+        }
+
+        const workId = (location.pathname.match(/\/works\/(\d+)/) || [])[1] || "";
+        const chapterId = (location.pathname.match(/\/chapters\/(\d+)/) || [])[1] || "";
+
+        if (workId && chapterId) {
+            add(`${location.origin}/comments/show_comments?chapter_id=${chapterId}&show_comments=true`);
+            add(`${location.origin}/works/${workId}/chapters/${chapterId}?show_comments=true&view_full_work=false#comments`);
+        }
+
+        if (workId) {
+            add(`${location.origin}/works/${workId}?show_comments=true#comments`);
+            add(`${location.origin}/works/${workId}?show_comments=true&view_full_work=true#comments`);
+        }
+
+        return urls;
+    }
+
+    function decodePossibleAo3RemoteHtml(rawText) {
+        let text = String(rawText || "");
+
+        text = text
+            .replace(/\\u003C/g, "<")
+            .replace(/\\u003E/g, ">")
+            .replace(/\\u0026/g, "&")
+            .replace(/\\u002F/g, "/")
+            .replace(/\\\//g, "/")
+            .replace(/\\"/g, '"')
+            .replace(/\\'/g, "'")
+            .replace(/\\n/g, "\n")
+            .replace(/\\r/g, "\n")
+            .replace(/\\t/g, " ");
+
+        const textarea = document.createElement("textarea");
+        textarea.innerHTML = text;
+        text = textarea.value;
+
+        return text;
+    }
+
+    function parseHtmlLikeDocuments(rawText) {
+        const docs = [];
+        const parser = new DOMParser();
+
+        const raw = String(rawText || "");
+        const decoded = decodePossibleAo3RemoteHtml(raw);
+
+        docs.push(parser.parseFromString(raw, "text/html"));
+
+        if (decoded !== raw) {
+            docs.push(parser.parseFromString(decoded, "text/html"));
+        }
+
+        const firstTag = decoded.indexOf("<");
+        const lastTag = decoded.lastIndexOf(">");
+
+        if (firstTag >= 0 && lastTag > firstTag) {
+            const htmlSlice = decoded.slice(firstTag, lastTag + 1);
+            docs.push(parser.parseFromString(htmlSlice, "text/html"));
+        }
+
+        return docs;
+    }
+
+    function isOwnedByThisComment(node, commentEl) {
+        const owner = node.closest(COMMENT_WRAPPER_SELECTOR);
+
+        if (!owner) {
+            return true;
+        }
+
+        return owner === commentEl;
+    }
+
+    function getOwnedDescendants(commentEl, selector) {
+        return Array.from(commentEl.querySelectorAll(selector)).filter((node) => {
+            return isOwnedByThisComment(node, commentEl);
+        });
+    }
+
+    function cloneCommentWithoutNestedReplies(commentEl) {
+        const clone = commentEl.cloneNode(true);
+
+        clone.querySelectorAll(COMMENT_WRAPPER_SELECTOR).forEach((node) => {
+            node.remove();
+        });
+
+        return clone;
+    }
+
+    function getCommentCandidateElements(container) {
+        if (!container) return [];
+
+        const selector = [
+            "li.comment",
+            "div.comment",
+            "li[id^='comment_']",
+            "div[id^='comment_']",
+            "li[id*='comment_']",
+            "div[id*='comment_']",
+            ".comment .userstuff"
+        ].join(", ");
+
+        const raw = [];
+
+        if (container.nodeType === Node.ELEMENT_NODE && container.matches(selector)) {
+            raw.push(container);
+        }
+
+        raw.push(...Array.from(container.querySelectorAll(selector)));
+
+        const candidates = [];
+
+        for (const el of raw) {
+            const wrapper =
+                el.closest(COMMENT_WRAPPER_SELECTOR) ||
+                el.closest(".comment") ||
+                el;
+
+            if (!candidates.includes(wrapper)) {
+                candidates.push(wrapper);
+            }
+        }
+
+        return candidates;
+    }
+
+    function extractCommentAuthor(commentEl) {
+        const selectors = [
+            ".byline a[rel='author']",
+            ".byline .user",
+            "h4.byline a",
+            ".heading.byline a",
+            ".commenter",
+            ".user"
+        ];
+
+        for (const selector of selectors) {
+            const nodes = getOwnedDescendants(commentEl, selector);
+
+            for (const el of nodes) {
+                const text = getCleanText(el);
+
+                if (text) {
+                    return text;
+                }
+            }
+        }
+
+        const bylineNodes = getOwnedDescendants(commentEl, ".byline, h4, .heading");
+
+        for (const node of bylineNodes) {
+            const byline = getCleanText(node);
+
+            if (byline) {
+                return byline
+                    .replace(/\s+said:.*$/i, "")
+                    .replace(/\s+on\s+.*$/i, "")
+                    .replace(/\s+Chapter\s+\d+.*$/i, "")
+                    .replace(/\s+commented:.*$/i, "")
+                    .trim();
+            }
+        }
+
+        return "Anonymous";
+    }
+
+    function extractCommentDate(commentEl) {
+        const selectors = [
+            "time",
+            ".datetime",
+            ".posted",
+            ".date"
+        ];
+
+        for (const selector of selectors) {
+            const nodes = getOwnedDescendants(commentEl, selector);
+
+            for (const el of nodes) {
+                const datetime = el.getAttribute("datetime");
+
+                if (datetime) {
+                    return datetime.slice(0, 10);
+                }
+
+                const text = getCleanText(el);
+
+                if (text) {
+                    return text;
+                }
+            }
+        }
+
+        const clone = cloneCommentWithoutNestedReplies(commentEl);
+        const text = getCleanText(clone);
+
+        const dateMatch =
+            text.match(/\d{4}-\d{2}-\d{2}/) ||
+            text.match(/\d{1,2}\s+\w+\s+\d{4}/) ||
+            text.match(/\w{3}\s+\d{1,2}\s+\w{3}\s+\d{4}\s+\d{1,2}:\d{2}[AP]M\s+UTC/i);
+
+        return dateMatch ? dateMatch[0] : "";
+    }
+
+    function extractCommentBody(commentEl) {
+        const selectors = [
+            ".userstuff",
+            ".comment-text",
+            ".comment-body",
+            "blockquote"
+        ];
+
+        for (const selector of selectors) {
+            const nodes = getOwnedDescendants(commentEl, selector);
+
+            for (const el of nodes) {
+                if (el.closest(".byline, .actions, .navigation, .landmark")) continue;
+
+                const text = getCleanText(el);
+
+                if (text.length > 0) {
+                    return text;
+                }
+            }
+        }
+
+        const clone = cloneCommentWithoutNestedReplies(commentEl);
+
+        clone
+            .querySelectorAll(
+                ".byline, h4.byline, .heading.byline, .actions, .navigation, .landmark, script, style, iframe, noscript, form, input, button"
+            )
+            .forEach((node) => node.remove());
+
+        return getCleanText(clone);
+    }
+
+    function isRealCommentElement(el) {
+        if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
+
+        if (
+            el.closest(
+                ".summary, .notes, .meta, .preface, #chapters, #workskin, .chapter, .actions, .navigation, .landmark"
+            )
+        ) {
+            return false;
+        }
+
+        const body = extractCommentBody(el);
+        if (!body || body.length < 2) return false;
+
+        const text = getCleanText(cloneCommentWithoutNestedReplies(el)).toLowerCase();
+
+        if (
+            text === "comments" ||
+            text.startsWith("comments (") ||
+            text.includes("post comment") ||
+            text.includes("leave a comment") ||
+            text.includes("summary") ||
+            text.includes("notes")
+        ) {
+            return false;
+        }
+
+        const id = el.getAttribute("id") || "";
+        const className = el.getAttribute("class") || "";
+
+        const hasCommentIdentity =
+            /comment_\d+/.test(id) ||
+            /\bcomment\b/.test(className);
+
+        const hasByline =
+            getOwnedDescendants(
+                el,
+                ".byline, h4.byline, .heading.byline, a[rel='author']"
+            ).length > 0;
+
+        const hasBody =
+            getOwnedDescendants(
+                el,
+                ".userstuff, blockquote, .comment-text, .comment-body"
+            ).length > 0;
+
+        return hasCommentIdentity || (hasByline && hasBody);
+    }
+
+    function extractCommentElementsFromContainer(container) {
+        if (!container) return [];
+
+        const candidates = getCommentCandidateElements(container).filter(isRealCommentElement);
+
+        const uniqueComments = [];
+        const seenKeys = new Set();
+
+        for (const el of candidates) {
+            const body = extractCommentBody(el);
+            const author = extractCommentAuthor(el);
+            const dateText = extractCommentDate(el);
+
+            if (body.length < 2) continue;
+
+            const key = `${author}|${dateText}|${body.slice(0, 160)}`;
+
+            if (seenKeys.has(key)) continue;
+
+            seenKeys.add(key);
+            uniqueComments.push(el);
+        }
+
+        return uniqueComments;
+    }
+
+    function extractCommentElementsFromDocument(doc) {
+        if (!doc) return [];
+
+        const roots = [
+            doc.querySelector("#comments"),
+            doc.querySelector("#comments_placeholder"),
+            doc.querySelector("#feedback"),
+            doc.querySelector("ol.thread"),
+            doc.querySelector(".comments"),
+            doc.querySelector(".feedback"),
+            doc.body,
+            doc.documentElement
+        ].filter(Boolean);
+
+        const all = [];
+        const seenKeys = new Set();
+
+        for (const root of roots) {
+            const comments = extractCommentElementsFromContainer(root);
+
+            for (const el of comments) {
+                const body = extractCommentBody(el);
+                const author = extractCommentAuthor(el);
+                const dateText = extractCommentDate(el);
+                const key = `${author}|${dateText}|${body.slice(0, 160)}`;
+
+                if (seenKeys.has(key)) continue;
+
+                seenKeys.add(key);
+                all.push(el);
+            }
+        }
+
+        return all;
+    }
+
+    async function fetchCommentsFromUrl(url) {
+        try {
+            if (SHOW_DEBUG) {
+                console.warn("[AO3 Paper] Trying comment URL:", url);
+            }
+
+            const response = await fetch(url, {
+                method: 'GET',
+                credentials: 'include',
+                cache: 'no-cache',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+
+            if (!response.ok) {
+                if (SHOW_DEBUG) {
+                    console.warn("[AO3 Paper] Comment fetch failed:", response.status, url);
+                }
+
+                return [];
+            }
+
+            const rawText = await response.text();
+
+            if (!rawText || rawText.length < 50) {
+                if (SHOW_DEBUG) {
+                    console.warn("[AO3 Paper] Empty comment response:", url);
+                }
+
+                return [];
+            }
+
+            const docs = parseHtmlLikeDocuments(rawText);
+            const all = [];
+            const seenKeys = new Set();
+
+            for (const doc of docs) {
+                const comments = extractCommentElementsFromDocument(doc);
+
+                for (const el of comments) {
+                    const body = extractCommentBody(el);
+                    const author = extractCommentAuthor(el);
+                    const dateText = extractCommentDate(el);
+                    const key = `${author}|${dateText}|${body.slice(0, 160)}`;
+
+                    if (seenKeys.has(key)) continue;
+
+                    seenKeys.add(key);
+                    all.push(el);
+                }
+            }
+
+            if (SHOW_DEBUG) {
+                console.warn("[AO3 Paper] Parsed comments from URL:", all.length, url);
+            }
+
+            return all;
+        } catch (err) {
+            if (SHOW_DEBUG) {
+                console.warn("[AO3 Paper] Comment fetch error:", err, url);
+            }
+
+            return [];
+        }
+    }
+
+    async function fetchCommentElements() {
+        if (!FETCH_COMMENTS_IF_MISSING) {
+            return [];
+        }
+
+        const urls = getCommentFetchUrls();
+        const all = [];
+        const seenKeys = new Set();
+
+        for (const url of urls) {
+            const comments = await fetchCommentsFromUrl(url);
+
+            for (const el of comments) {
+                const body = extractCommentBody(el);
+                const author = extractCommentAuthor(el);
+                const dateText = extractCommentDate(el);
+                const key = `${author}|${dateText}|${body.slice(0, 160)}`;
+
+                if (seenKeys.has(key)) continue;
+
+                seenKeys.add(key);
+                all.push(el);
+            }
+
+            if (all.length > 0) {
+                break;
+            }
+        }
+
+        return all;
+    }
+
+    async function collectCommentReferenceBlocks() {
+        if (!SHOW_COMMENT_REFERENCES) {
+            return [];
+        }
+
+        let uniqueComments = extractCommentElementsFromDocument(document);
+
+        if (SHOW_DEBUG) {
+            console.warn("[AO3 Paper] Comments from current DOM:", uniqueComments.length);
+        }
+
+        if (uniqueComments.length === 0) {
+            uniqueComments = await fetchCommentElements();
+        }
+
+        if (uniqueComments.length === 0) {
+            if (SHOW_DEBUG) {
+                console.warn("[AO3 Paper] No comment references extracted.");
+            }
+
+            return [];
+        }
+
+        const blocks = [];
+        blocks.push(makeHorizontalRule());
+        blocks.push(makeCommentReferenceTitle());
+
+        const selected = uniqueComments.slice(0, COMMENT_REFERENCE_LIMIT);
+
+        selected.forEach((commentEl, idx) => {
+            const author = extractCommentAuthor(commentEl);
+            const dateText = extractCommentDate(commentEl);
+            const body = extractCommentBody(commentEl);
+
+            blocks.push(makeCommentReferenceItem(idx + 1, author, dateText, body));
+        });
+
+        if (uniqueComments.length > COMMENT_REFERENCE_LIMIT) {
+            const p = document.createElement("p");
+            p.className = "ao3-reference";
+            p.textContent = `[${COMMENT_REFERENCE_LIMIT + 1}] Additional AO3 comments omitted. Total comments found ${uniqueComments.length}.`;
+            blocks.push(p);
+        }
+
+        return blocks;
+    }
+
+    /* ============================================================
+     * Chapter text extraction
+     * ============================================================ */
+
     function findChapterTextRoots() {
         const roots = [];
 
@@ -796,9 +1556,11 @@
         for (const node of children) {
             if (node.nodeType === Node.TEXT_NODE) {
                 const text = normalizeText(node.textContent);
+
                 if (text.length > 0) {
                     blocks.push(paragraphFromText(text));
                 }
+
                 continue;
             }
 
@@ -844,13 +1606,16 @@
 
             if (["h1", "h2", "h3", "h4"].includes(tag)) {
                 const text = getCleanText(node);
+
                 if (text.length > 0) {
                     blocks.push(headingFromText(text, tag));
                 }
+
                 continue;
             }
 
             const nested = collectBlocksFromParagraphs(node);
+
             for (const item of nested) {
                 blocks.push(item);
             }
@@ -928,6 +1693,10 @@
         return chunks;
     }
 
+    /* ============================================================
+     * Page building and pagination
+     * ============================================================ */
+
     function createPage(pageIndex, meta) {
         const page = document.createElement("div");
         page.className = "ao3-paper-page";
@@ -940,7 +1709,7 @@
             page.appendChild(makeRunningHeader(pageIndex));
         }
 
-        if (SHOW_SIDE_STAMP) {
+        if (SHOW_SIDE_STAMP && (SIDE_STAMP_EVERY_PAGE || pageIndex === 1)) {
             page.appendChild(makeSideStamp(meta));
         }
 
@@ -958,7 +1727,15 @@
     }
 
     function pageOverflow(content) {
-        return content.scrollWidth > content.clientWidth + 4;
+        /*
+         * Multi-column overflow is noisy. A small scrollWidth increase may be
+         * caused by reference indentation or long words rather than true page
+         * overflow. This threshold avoids premature page breaks.
+         */
+        const overflowBy = content.scrollWidth - content.clientWidth;
+        const threshold = Math.max(80, content.clientWidth * 0.08);
+
+        return overflowBy > threshold;
     }
 
     function buildPages(blocks, view, meta) {
@@ -1014,17 +1791,20 @@
         return pageIndex;
     }
 
-    function buildView() {
+    async function buildView() {
         const oldView = document.getElementById(VIEW_ID);
         if (oldView) oldView.remove();
 
         const meta = getAO3Meta();
         const blocks = collectContentBlocks();
+        const commentReferenceBlocks = await collectCommentReferenceBlocks();
 
         if (blocks.length === 0) {
             alert("没有提取到正文。请确认页面已经完整加载，或关闭其他 AO3 样式脚本后再刷新。");
             return false;
         }
+
+        const finalBlocks = blocks.concat(commentReferenceBlocks);
 
         const view = document.createElement("div");
         view.id = VIEW_ID;
@@ -1032,17 +1812,21 @@
         if (SHOW_DEBUG) {
             const debug = document.createElement("div");
             debug.className = "ao3-paper-debug";
-            debug.textContent = `paper mode loaded, blocks ${blocks.length}`;
+            debug.textContent = `paper mode loaded, blocks ${finalBlocks.length}, references ${commentReferenceBlocks.length}`;
             view.appendChild(debug);
         }
 
         const main = document.querySelector("#main") || document.body;
         main.appendChild(view);
 
-        buildPages(blocks, view, meta);
+        buildPages(finalBlocks, view, meta);
 
         return true;
     }
+
+    /* ============================================================
+     * Zoom controls
+     * ============================================================ */
 
     function clampZoom(value) {
         return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
@@ -1070,6 +1854,7 @@
         localStorage.setItem(ZOOM_STORAGE_KEY, String(zoom));
 
         const label = document.getElementById("ao3-paper-zoom-label");
+
         if (label) {
             label.textContent = `${Math.round(zoom * 100)}%`;
         }
@@ -1087,10 +1872,14 @@
         setPaperZoom(DEFAULT_ZOOM);
     }
 
-    function enableMode() {
+    /* ============================================================
+     * Enable and disable
+     * ============================================================ */
+
+    async function enableMode() {
         addStyle();
 
-        const ok = buildView();
+        const ok = await buildView();
 
         if (!ok) {
             document.body.classList.remove("ao3-arxiv-paper-mode");
@@ -1108,7 +1897,10 @@
         localStorage.setItem(STORAGE_KEY, "0");
 
         const view = document.getElementById(VIEW_ID);
-        if (view) view.remove();
+
+        if (view) {
+            view.remove();
+        }
     }
 
     function toggleMode() {
@@ -1118,6 +1910,10 @@
             enableMode();
         }
     }
+
+    /* ============================================================
+     * Floating toolbar
+     * ============================================================ */
 
     function addFloatingToolbar() {
         if (document.getElementById(TOOLBAR_ID)) return;
@@ -1160,6 +1956,15 @@
         setPaperZoom(getSavedZoom());
     }
 
+    /* ============================================================
+     * Shortcuts
+     *
+     * Option plus P toggles paper mode on macOS.
+     * Option plus Equal zooms in.
+     * Option plus Minus zooms out.
+     * Option plus 0 resets zoom.
+     * ============================================================ */
+
     document.addEventListener("keydown", function (event) {
         if (event.altKey && event.code === "KeyP") {
             event.preventDefault();
@@ -1198,4 +2003,19 @@
     } else {
         boot();
     }
+})();// ==UserScript==
+// @name         New Userscript
+// @namespace    http://tampermonkey.net/
+// @version      2026-07-02
+// @description  try to take over the world!
+// @author       You
+// @match        https://*/*
+// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
+// @grant        none
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // Your code here...
 })();
