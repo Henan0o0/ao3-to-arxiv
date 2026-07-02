@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         AO3 to arXiv Paper Reader with Zoom
 // @namespace    local.ao3.arxiv.paper.reader.zoom
-// @version      0.9.7
-// @description  Convert AO3 work pages into an arXiv-like local paper layout with pagination, side stamp, zoom controls, and comment references
+// @version      1.0.0
+// @description  Convert AO3 work pages into an arXiv-like paper layout with zoom, dynamic index terms, and comment references.
 // @match        https://archiveofourown.org/works/*
 // @match        https://www.archiveofourown.org/works/*
 // @match        https://archiveofourown.gay/works/*
@@ -16,26 +16,11 @@
 (function () {
     "use strict";
 
-    /* ============================================================
-     * Basic IDs and localStorage keys
-     * ============================================================ */
-
     const STYLE_ID = "ao3-arxiv-paper-style";
     const VIEW_ID = "ao3-arxiv-paper-view";
     const TOOLBAR_ID = "ao3-arxiv-paper-toolbar";
-    const BUTTON_ID = "ao3-arxiv-paper-toggle-button";
     const STORAGE_KEY = "ao3_arxiv_paper_reader_enabled";
     const ZOOM_STORAGE_KEY = "ao3_arxiv_paper_zoom";
-
-    /* ============================================================
-     * Main layout parameters
-     *
-     * FONT_SIZE_PX controls body font size.
-     * LINE_HEIGHT controls line spacing.
-     * LINES_PER_COLUMN controls page height.
-     * PAGE_WIDTH_PX controls paper width.
-     * COLUMN_GAP_PX controls gap between two text columns.
-     * ============================================================ */
 
     const FONT_SIZE_PX = 16;
     const LINE_HEIGHT = 1.05;
@@ -43,95 +28,42 @@
     const PAGE_WIDTH_PX = 1120;
     const COLUMN_GAP_PX = 38;
 
-    /* ============================================================
-     * Zoom parameters
-     * ============================================================ */
-
     const DEFAULT_ZOOM = 1.0;
     const MIN_ZOOM = 0.65;
     const MAX_ZOOM = 1.35;
     const ZOOM_STEP = 0.05;
 
-    /* ============================================================
-     * Feature switches
-     * ============================================================ */
-
+    // Set to true if you need the yellow debug banner and console logs.
     const SHOW_DEBUG = false;
     const SHOW_ABSTRACT = true;
     const SHOW_NOTES_AS_ABSTRACT = true;
     const SHOW_RUNNING_HEADER = true;
 
-    /* ============================================================
-     * Side date stamp controls
-     *
-     * SHOW_SIDE_STAMP:
-     * true means show the vertical side stamp.
-     *
-     * SIDE_STAMP_EVERY_PAGE:
-     * true means every page has the side stamp.
-     * false means only the first page has the side stamp.
-     *
-     * SIDE_STAMP_FONT_SIZE_PX:
-     * controls side stamp font size.
-     * ============================================================ */
-
     const SHOW_SIDE_STAMP = true;
     const SIDE_STAMP_EVERY_PAGE = false;
     const SIDE_STAMP_FONT_SIZE_PX = 30;
 
-    /* ============================================================
-     * Comment references controls
-     *
-     * SHOW_COMMENT_REFERENCES:
-     * true means AO3 comments are appended as References.
-     *
-     * COMMENT_REFERENCE_LIMIT:
-     * maximum number of comments included.
-     *
-     * COMMENT_REFERENCE_MAX_CHARS:
-     * maximum length of each comment excerpt.
-     *
-     * FETCH_COMMENTS_IF_MISSING:
-     * true means the script fetches show_comments=true pages if the
-     * current DOM only has a Comments button.
-     * ============================================================ */
-
     const SHOW_COMMENT_REFERENCES = true;
-    const COMMENT_REFERENCE_LIMIT = 30;
+    const COMMENT_REFERENCE_LIMIT = 100;
     const COMMENT_REFERENCE_MAX_CHARS = 220;
     const FETCH_COMMENTS_IF_MISSING = true;
+
+    // Maximum count for each Index Terms section.
+    const INDEX_RELATIONSHIP_LIMIT = 12;
+    const INDEX_ADDITIONAL_TAG_LIMIT = 18;
 
     const JOURNAL_TEXT = "JOURNAL OF LOCAL AO3 CLASS FILES, VOL. 1, NO. 1";
     const SUBJECT_TEXT = "[AO3]";
     const ABSTRACT_TITLE = "Abstract";
 
-    /* ============================================================
-     * Page grid parameters
-     *
-     * The page uses CSS grid.
-     * Left column is reserved for the vertical date stamp.
-     * Right column is reserved for paper text.
-     * ============================================================ */
-
-    const SIDE_STAMP_WIDTH_PX = 60;
+    const SIDE_STAMP_WIDTH_PX = 20;
     const PAGE_HEADER_HEIGHT_PX = 24;
     const PAGE_FOOTER_HEIGHT_PX = 18;
     const PAGE_ROW_GAP_PX = 12;
+    const PAGE_CONTENT_HEIGHT_PX = Math.round(FONT_SIZE_PX * LINE_HEIGHT * LINES_PER_COLUMN);
+    const PAGE_HEIGHT_PX = PAGE_HEADER_HEIGHT_PX + PAGE_CONTENT_HEIGHT_PX + PAGE_FOOTER_HEIGHT_PX + PAGE_ROW_GAP_PX * 2 + 34;
 
-    const PAGE_CONTENT_HEIGHT_PX = Math.round(
-        FONT_SIZE_PX * LINE_HEIGHT * LINES_PER_COLUMN
-    );
-
-    const PAGE_HEIGHT_PX =
-        PAGE_HEADER_HEIGHT_PX +
-        PAGE_CONTENT_HEIGHT_PX +
-        PAGE_FOOTER_HEIGHT_PX +
-        PAGE_ROW_GAP_PX * 2 +
-        34;
-
-    /* ============================================================
-     * Text helpers
-     * ============================================================ */
+    const COMMENT_WRAPPER_SELECTOR = "li.comment, div.comment, li[id^='comment_'], div[id^='comment_'], li[id*='comment_'], div[id*='comment_']";
 
     function normalizeText(text) {
         return String(text || "")
@@ -147,29 +79,26 @@
     }
 
     function getCleanText(el) {
-        if (!el) return "";
-        return normalizeText(el.textContent || "");
+        return el ? normalizeText(el.textContent || "") : "";
+    }
+
+    function unique(items) {
+        return Array.from(new Set(items.filter(Boolean)));
     }
 
     function findDtValue(labelPattern) {
-        const dts = Array.from(document.querySelectorAll("dt"));
-
-        for (const dt of dts) {
-            const label = getCleanText(dt);
-            if (!labelPattern.test(label)) continue;
+        for (const dt of Array.from(document.querySelectorAll("dt"))) {
+            if (!labelPattern.test(getCleanText(dt))) continue;
 
             let next = dt.nextElementSibling;
 
             while (next) {
-                if (next.tagName && next.tagName.toLowerCase() === "dd") {
+                if (next.tagName?.toLowerCase() === "dd") {
                     const value = getCleanText(next);
                     if (value) return value;
                 }
 
-                if (next.tagName && next.tagName.toLowerCase() === "dt") {
-                    break;
-                }
-
+                if (next.tagName?.toLowerCase() === "dt") break;
                 next = next.nextElementSibling;
             }
         }
@@ -177,9 +106,46 @@
         return "";
     }
 
-    /* ============================================================
-     * AO3 metadata extraction
-     * ============================================================ */
+    function findDtValues(labelPattern) {
+        const values = [];
+
+        for (const dt of Array.from(document.querySelectorAll("dt"))) {
+            if (!labelPattern.test(getCleanText(dt))) continue;
+
+            let next = dt.nextElementSibling;
+
+            while (next) {
+                if (next.tagName?.toLowerCase() === "dd") {
+                    const links = Array.from(next.querySelectorAll("a"))
+                        .map(getCleanText)
+                        .filter(Boolean);
+
+                    if (links.length) {
+                        values.push(...links);
+                    } else {
+                        const text = getCleanText(next);
+                        if (text) values.push(text);
+                    }
+                }
+
+                if (next.tagName?.toLowerCase() === "dt") break;
+                next = next.nextElementSibling;
+            }
+        }
+
+        return unique(values);
+    }
+
+    function getAO3IndexTerms() {
+        const relationships = findDtValues(/^Relationships?:?/i).slice(0, INDEX_RELATIONSHIP_LIMIT);
+        const additionalTags = findDtValues(/^Additional Tags?:?/i).slice(0, INDEX_ADDITIONAL_TAG_LIMIT);
+        const parts = [];
+
+        if (relationships.length) parts.push(`Relationships: ${relationships.join(", ")}`);
+        if (additionalTags.length) parts.push(`Additional Tags: ${additionalTags.join(", ")}`);
+
+        return parts.length ? parts.join("; ") + "." : "AO3 Work, Web Fiction, Archive Layout.";
+    }
 
     function getAO3Meta() {
         const title =
@@ -221,14 +187,7 @@
         const workId = (location.pathname.match(/\/works\/(\d+)/) || [])[1] || "";
         const chapterId = (location.pathname.match(/\/chapters\/(\d+)/) || [])[1] || "";
 
-        return {
-            title,
-            author,
-            published,
-            updated,
-            workId,
-            chapterId
-        };
+        return { title, author, published, updated, workId, chapterId };
     }
 
     function formatDateForStamp(dateStr) {
@@ -236,65 +195,37 @@
 
         const iso = dateStr.match(/^([0-9]{4})-([0-9]{2})-([0-9]{2})$/);
 
-        if (iso) {
-            const year = iso[1];
-            const month = Number(iso[2]);
-            const day = Number(iso[3]);
+        if (!iso) return dateStr;
 
-            const months = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"
-            ];
-
-            return `${day} ${months[month - 1] || ""} ${year}`.trim();
-        }
-
-        return dateStr;
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return `${Number(iso[3])} ${months[Number(iso[2]) - 1] || ""} ${iso[1]}`.trim();
     }
-
-    /* ============================================================
-     * Node filtering
-     * ============================================================ */
 
     function shouldSkipElement(el) {
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
 
-        const selector =
-            ".summary, .meta, .preface, .landmark, .navigation, .actions, #header, #footer, #comments, #feedback";
-
-        if (el.matches(selector)) return true;
-        if (el.closest(selector)) return true;
-
-        return false;
+        const selector = ".summary, .meta, .preface, .landmark, .navigation, .actions, #header, #footer, #comments, #feedback";
+        return el.matches(selector) || Boolean(el.closest(selector));
     }
 
     function shouldSkipForAbstract(el) {
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
 
-        const selector =
-            ".meta, .landmark, .navigation, .actions, #header, #footer, #comments, #feedback";
-
-        if (el.matches(selector)) return true;
-        if (el.closest(selector)) return true;
-
-        return false;
+        const selector = ".meta, .landmark, .navigation, .actions, #header, #footer, #comments, #feedback";
+        return el.matches(selector) || Boolean(el.closest(selector));
     }
 
     function htmlToTextParts(el, options = {}) {
         if (!el) return [];
 
-        const keepNotes = Boolean(options.keepNotes);
         const clone = el.cloneNode(true);
-
-        const removeSelector = keepNotes
+        const removeSelector = options.keepNotes
             ? "script, style, iframe, noscript, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments, #feedback"
             : "script, style, iframe, noscript, .notes, .summary, .meta, .preface, .landmark, .navigation, .actions, #comments, #feedback";
 
         clone.querySelectorAll(removeSelector).forEach((node) => node.remove());
 
-        let html = clone.innerHTML || "";
-
-        html = html
+        const html = (clone.innerHTML || "")
             .replace(/<hr[^>]*>/gi, "\n[[AO3_HR]]\n")
             .replace(/<br\s*\/?>/gi, "\n")
             .replace(/<\/p>/gi, "\n")
@@ -306,63 +237,36 @@
         const temp = document.createElement("div");
         temp.innerHTML = html;
 
-        const text = temp.textContent || "";
-
-        return text
+        return (temp.textContent || "")
             .split(/\n+/)
-            .map((part) => normalizeText(part))
-            .filter((part) => part.length > 0);
+            .map(normalizeText)
+            .filter(Boolean);
     }
 
     function extractAbstractText() {
-        const summaryCandidates = [
-            ".summary .userstuff",
-            ".summary blockquote",
-            ".summary"
-        ];
-
-        for (const selector of summaryCandidates) {
-            const el = document.querySelector(selector);
-            const parts = htmlToTextParts(el, { keepNotes: false });
-            const text = parts
-                .filter((part) => part !== "[[AO3_HR]]")
+        for (const selector of [".summary .userstuff", ".summary blockquote", ".summary"]) {
+            const text = htmlToTextParts(document.querySelector(selector), { keepNotes: false })
+                .filter((p) => p !== "[[AO3_HR]]")
                 .join(" ");
 
-            if (text.length > 40) {
-                return text;
-            }
+            if (text.length > 40) return text;
         }
 
-        if (!SHOW_NOTES_AS_ABSTRACT) {
-            return "";
-        }
+        if (!SHOW_NOTES_AS_ABSTRACT) return "";
 
-        const noteCandidates = [
-            ".chapter.preface .notes .userstuff",
-            ".preface .notes .userstuff",
-            ".notes .userstuff"
-        ];
-
-        for (const selector of noteCandidates) {
+        for (const selector of [".chapter.preface .notes .userstuff", ".preface .notes .userstuff", ".notes .userstuff"]) {
             const el = document.querySelector(selector);
             if (!el || shouldSkipForAbstract(el)) continue;
 
-            const parts = htmlToTextParts(el, { keepNotes: true });
-            const text = parts
-                .filter((part) => part !== "[[AO3_HR]]")
+            const text = htmlToTextParts(el, { keepNotes: true })
+                .filter((p) => p !== "[[AO3_HR]]")
                 .join(" ");
 
-            if (text.length > 40) {
-                return text;
-            }
+            if (text.length > 40) return text;
         }
 
         return "";
     }
-
-    /* ============================================================
-     * CSS injection
-     * ============================================================ */
 
     function addStyle() {
         if (document.getElementById(STYLE_ID)) return;
@@ -431,15 +335,14 @@
         height: ${PAGE_HEIGHT_PX}px;
         margin: 0 auto 22px auto;
         padding: 18px 46px 16px 22px;
-        background: #ffffff;
+        background: #fff;
         border: 1px solid #d0d0d0;
-        box-shadow: 0 1px 10px rgba(0, 0, 0, 0.08);
+        box-shadow: 0 1px 10px rgba(0,0,0,.08);
         box-sizing: border-box;
         position: relative;
         overflow: hidden;
-
         display: grid;
-        grid-template-columns: ${SIDE_STAMP_WIDTH_PX}px minmax(0, 1fr);
+        grid-template-columns: ${SIDE_STAMP_WIDTH_PX}px minmax(0,1fr);
         grid-template-rows: ${PAGE_HEADER_HEIGHT_PX}px ${PAGE_CONTENT_HEIGHT_PX}px ${PAGE_FOOTER_HEIGHT_PX}px;
         column-gap: 18px;
         row-gap: ${PAGE_ROW_GAP_PX}px;
@@ -456,7 +359,7 @@
         font-size: 12px;
         color: #222;
         text-transform: uppercase;
-        letter-spacing: 0.2px;
+        letter-spacing: .2px;
         white-space: nowrap;
         min-width: 0;
       }
@@ -467,7 +370,6 @@
         position: static;
         align-self: center;
         justify-self: center;
-
         writing-mode: vertical-rl;
         transform: rotate(180deg);
         font-family: "Times New Roman", Times, serif;
@@ -478,7 +380,6 @@
         pointer-events: none;
         user-select: none;
         white-space: nowrap;
-
         max-height: ${PAGE_CONTENT_HEIGHT_PX}px;
         overflow: hidden;
       }
@@ -531,7 +432,8 @@
         text-align: center;
       }
 
-      .ao3-paper-abstract {
+      .ao3-paper-abstract,
+      .ao3-paper-index {
         font-family: Arial, Helvetica, sans-serif;
         font-size: 14px;
         line-height: 1.35;
@@ -542,15 +444,6 @@
 
       .ao3-paper-abstract b {
         font-weight: 700;
-      }
-
-      .ao3-paper-index {
-        font-family: Arial, Helvetica, sans-serif;
-        font-size: 14px;
-        line-height: 1.35;
-        text-align: left;
-        margin: 0 auto 18px auto;
-        max-width: 900px;
       }
 
       .ao3-paper-divider {
@@ -575,7 +468,7 @@
       }
 
       .ao3-paper-content p {
-        margin: 0 0 0.62em 0;
+        margin: 0 0 .62em 0;
         text-indent: 1.45em;
         font-family: "Times New Roman", Times, serif;
         font-size: ${FONT_SIZE_PX}px;
@@ -612,7 +505,7 @@
         font-style: normal;
         font-weight: 700;
         color: #000;
-        margin: 1.1em 0 0.55em 0;
+        margin: 1.1em 0 .55em 0;
         break-after: avoid;
       }
 
@@ -630,7 +523,7 @@
       }
 
       .ao3-paper-content blockquote {
-        margin: 0.8em 1.2em;
+        margin: .8em 1.2em;
         padding-left: 1em;
         border-left: 3px solid #aaa;
         break-inside: avoid;
@@ -638,19 +531,19 @@
 
       .ao3-paper-content ul,
       .ao3-paper-content ol {
-        margin: 0.8em 0 0.8em 1.6em;
+        margin: .8em 0 .8em 1.6em;
         padding: 0;
       }
 
       .ao3-paper-content li {
-        margin: 0.25em 0;
+        margin: .25em 0;
       }
 
       .ao3-paper-content hr {
         column-span: all;
         border: none;
         border-top: 1px solid #888;
-        margin: 1.15em 0 1.15em 0;
+        margin: 1.15em 0;
         height: 0;
       }
 
@@ -659,18 +552,18 @@
         font-family: Arial, Helvetica, sans-serif;
         font-size: 19px;
         font-weight: 700;
-        margin: 0.8em 0 0.5em 0;
+        margin: .8em 0 .5em 0;
         text-align: left;
         break-after: avoid;
       }
 
       .ao3-paper-content p.ao3-reference {
         font-family: "Times New Roman", Times, serif;
-        font-size: calc(${FONT_SIZE_PX}px * 0.82);
+        font-size: calc(${FONT_SIZE_PX}px * .82);
         line-height: 1.12;
         text-indent: 0;
         padding-left: 0;
-        margin: 0 0 0.32em 0;
+        margin: 0 0 .32em 0;
         text-align: left;
         break-inside: auto;
         overflow-wrap: anywhere;
@@ -699,11 +592,11 @@
         padding: 7px 8px;
         border: 1px solid #999;
         border-radius: 8px;
-        background: #ffffff;
+        background: #fff;
         color: #111;
         font-family: Arial, Helvetica, sans-serif;
         font-size: 13px;
-        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+        box-shadow: 0 2px 8px rgba(0,0,0,.18);
       }
 
       #${TOOLBAR_ID} button {
@@ -718,7 +611,7 @@
       }
 
       #${TOOLBAR_ID} button:hover {
-        background: #eeeeee;
+        background: #eee;
       }
 
       #ao3-paper-zoom-label {
@@ -729,7 +622,7 @@
         color: #111;
       }
 
-      @media (max-width: 1200px) {
+      @media(max-width:1200px) {
         body.ao3-arxiv-paper-mode #main {
           max-width: 100% !important;
         }
@@ -741,7 +634,7 @@
         .ao3-paper-page {
           width: calc(100vw - 32px);
           padding: 18px 30px 16px 16px;
-          grid-template-columns: 76px minmax(0, 1fr);
+          grid-template-columns: 76px minmax(0,1fr);
           column-gap: 14px;
         }
 
@@ -751,7 +644,7 @@
 
         .ao3-paper-side-stamp {
           display: block;
-          font-size: calc(${SIDE_STAMP_FONT_SIZE_PX}px * 0.8);
+          font-size: calc(${SIDE_STAMP_FONT_SIZE_PX}px * .8);
         }
 
         .ao3-paper-running-header {
@@ -759,9 +652,9 @@
         }
       }
 
-      @media (max-width: 760px) {
+      @media(max-width:760px) {
         .ao3-paper-page {
-          grid-template-columns: minmax(0, 1fr);
+          grid-template-columns: minmax(0,1fr);
           padding-left: 30px;
           padding-right: 30px;
         }
@@ -782,7 +675,7 @@
 
       @media print {
         body.ao3-arxiv-paper-mode {
-          background: #ffffff !important;
+          background: #fff !important;
         }
 
         .ao3-paper-page {
@@ -800,10 +693,6 @@
         document.head.appendChild(style);
     }
 
-    /* ============================================================
-     * Page element builders
-     * ============================================================ */
-
     function makeRunningHeader(pageIndex) {
         const header = document.createElement("div");
         header.className = "ao3-paper-running-header";
@@ -814,9 +703,7 @@
         const right = document.createElement("div");
         right.textContent = String(pageIndex);
 
-        header.appendChild(left);
-        header.appendChild(right);
-
+        header.append(left, right);
         return header;
     }
 
@@ -824,12 +711,10 @@
         const stamp = document.createElement("div");
         stamp.className = "ao3-paper-side-stamp";
 
-        const dateBase = meta.published || meta.updated;
-        const dateText = formatDateForStamp(dateBase);
+        const dateText = formatDateForStamp(meta.published || meta.updated);
         const idText = meta.workId ? `${SUBJECT_TEXT} work ${meta.workId}` : SUBJECT_TEXT;
 
         stamp.textContent = `${dateText}   ${idText}`;
-
         return stamp;
     }
 
@@ -845,8 +730,7 @@
         author.className = "ao3-paper-author";
         author.textContent = meta.author;
 
-        wrapper.appendChild(title);
-        wrapper.appendChild(author);
+        wrapper.append(title, author);
 
         if (SHOW_ABSTRACT) {
             const abstractText = extractAbstractText();
@@ -858,11 +742,7 @@
                 const label = document.createElement("b");
                 label.textContent = `${ABSTRACT_TITLE}—`;
 
-                const body = document.createTextNode(abstractText);
-
-                abstract.appendChild(label);
-                abstract.appendChild(body);
-
+                abstract.append(label, document.createTextNode(abstractText));
                 wrapper.appendChild(abstract);
             }
         }
@@ -873,13 +753,7 @@
         const indexLabel = document.createElement("b");
         indexLabel.textContent = "Index Terms—";
 
-        const indexText = document.createTextNode(
-            "Local Reading Mode, Web Fiction, Archive Layout, Two Column Typesetting."
-        );
-
-        index.appendChild(indexLabel);
-        index.appendChild(indexText);
-
+        index.append(indexLabel, document.createTextNode(getAO3IndexTerms()));
         wrapper.appendChild(index);
 
         const divider = document.createElement("div");
@@ -893,29 +767,14 @@
         return document.createElement("hr");
     }
 
-    /* ============================================================
-     * Comment extraction and reference formatting
-     *
-     * AO3 comments are tree-structured.
-     * Parent comments may contain child replies.
-     * This section extracts parent and child comments separately.
-     * ============================================================ */
-
-    const COMMENT_WRAPPER_SELECTOR =
-        "li.comment, div.comment, li[id^='comment_'], div[id^='comment_'], li[id*='comment_'], div[id*='comment_']";
-
     function normalizeCommentText(text) {
-        return normalizeText(text)
-            .replace(/\s+/g, " ")
-            .trim();
+        return normalizeText(text).replace(/\s+/g, " ").trim();
     }
 
     function truncateText(text, maxChars) {
         const clean = normalizeCommentText(text);
 
-        if (clean.length <= maxChars) {
-            return clean;
-        }
+        if (clean.length <= maxChars) return clean;
 
         return clean.slice(0, maxChars).replace(/\s+\S*$/, "") + "...";
     }
@@ -936,15 +795,12 @@
         const excerpt = truncateText(commentText, COMMENT_REFERENCE_MAX_CHARS);
 
         p.textContent = `[${index}] ${safeAuthor}. “${excerpt}” AO3 comment${safeDate}.`;
-
         return p;
     }
 
     function getAbsoluteUrl(href) {
-        if (!href) return "";
-
         try {
-            return new URL(href, location.href).href;
+            return href ? new URL(href, location.href).href : "";
         } catch (_) {
             return "";
         }
@@ -955,9 +811,7 @@
             const u = new URL(url, location.href);
             u.searchParams.set("show_comments", "true");
 
-            if (!u.hash) {
-                u.hash = "comments";
-            }
+            if (!u.hash) u.hash = "comments";
 
             return u.href;
         } catch (_) {
@@ -968,29 +822,28 @@
     function getCommentFetchUrls() {
         const urls = [];
 
-        function add(url) {
-            if (!url) return;
-            if (!urls.includes(url)) urls.push(url);
-        }
+        const add = (url) => {
+            if (url && !urls.includes(url)) urls.push(url);
+        };
 
         add(addShowCommentsParam(location.href));
 
-        const commentLinks = Array.from(document.querySelectorAll("a")).filter((a) => {
+        for (const a of Array.from(document.querySelectorAll("a"))) {
             const text = getCleanText(a).toLowerCase();
             const href = a.getAttribute("href") || "";
 
-            return (
-                text.includes("comment") ||
-                href.includes("show_comments") ||
-                href.includes("#comments") ||
-                href.includes("/comments/")
-            );
-        });
+            if (
+                !(
+                    text.includes("comment") ||
+                    href.includes("show_comments") ||
+                    href.includes("#comments") ||
+                    href.includes("/comments/")
+                )
+            ) {
+                continue;
+            }
 
-        for (const a of commentLinks) {
-            const href = a.getAttribute("href") || "";
             const abs = getAbsoluteUrl(href);
-
             if (!abs) continue;
 
             add(addShowCommentsParam(abs));
@@ -1014,9 +867,7 @@
     }
 
     function decodePossibleAo3RemoteHtml(rawText) {
-        let text = String(rawText || "");
-
-        text = text
+        let text = String(rawText || "")
             .replace(/\\u003C/g, "<")
             .replace(/\\u003E/g, ">")
             .replace(/\\u0026/g, "&")
@@ -1030,30 +881,23 @@
 
         const textarea = document.createElement("textarea");
         textarea.innerHTML = text;
-        text = textarea.value;
 
-        return text;
+        return textarea.value;
     }
 
     function parseHtmlLikeDocuments(rawText) {
-        const docs = [];
         const parser = new DOMParser();
-
         const raw = String(rawText || "");
         const decoded = decodePossibleAo3RemoteHtml(raw);
+        const docs = [parser.parseFromString(raw, "text/html")];
 
-        docs.push(parser.parseFromString(raw, "text/html"));
-
-        if (decoded !== raw) {
-            docs.push(parser.parseFromString(decoded, "text/html"));
-        }
+        if (decoded !== raw) docs.push(parser.parseFromString(decoded, "text/html"));
 
         const firstTag = decoded.indexOf("<");
         const lastTag = decoded.lastIndexOf(">");
 
         if (firstTag >= 0 && lastTag > firstTag) {
-            const htmlSlice = decoded.slice(firstTag, lastTag + 1);
-            docs.push(parser.parseFromString(htmlSlice, "text/html"));
+            docs.push(parser.parseFromString(decoded.slice(firstTag, lastTag + 1), "text/html"));
         }
 
         return docs;
@@ -1061,27 +905,18 @@
 
     function isOwnedByThisComment(node, commentEl) {
         const owner = node.closest(COMMENT_WRAPPER_SELECTOR);
-
-        if (!owner) {
-            return true;
-        }
-
-        return owner === commentEl;
+        return !owner || owner === commentEl;
     }
 
     function getOwnedDescendants(commentEl, selector) {
-        return Array.from(commentEl.querySelectorAll(selector)).filter((node) => {
-            return isOwnedByThisComment(node, commentEl);
-        });
+        return Array.from(commentEl.querySelectorAll(selector)).filter((node) =>
+            isOwnedByThisComment(node, commentEl)
+        );
     }
 
     function cloneCommentWithoutNestedReplies(commentEl) {
         const clone = commentEl.cloneNode(true);
-
-        clone.querySelectorAll(COMMENT_WRAPPER_SELECTOR).forEach((node) => {
-            node.remove();
-        });
-
+        clone.querySelectorAll(COMMENT_WRAPPER_SELECTOR).forEach((node) => node.remove());
         return clone;
     }
 
@@ -1100,53 +935,37 @@
 
         const raw = [];
 
-        if (container.nodeType === Node.ELEMENT_NODE && container.matches(selector)) {
-            raw.push(container);
-        }
+        if (container.nodeType === Node.ELEMENT_NODE && container.matches(selector)) raw.push(container);
 
         raw.push(...Array.from(container.querySelectorAll(selector)));
 
         const candidates = [];
 
         for (const el of raw) {
-            const wrapper =
-                el.closest(COMMENT_WRAPPER_SELECTOR) ||
-                el.closest(".comment") ||
-                el;
+            const wrapper = el.closest(COMMENT_WRAPPER_SELECTOR) || el.closest(".comment") || el;
 
-            if (!candidates.includes(wrapper)) {
-                candidates.push(wrapper);
-            }
+            if (!candidates.includes(wrapper)) candidates.push(wrapper);
         }
 
         return candidates;
     }
 
     function extractCommentAuthor(commentEl) {
-        const selectors = [
+        for (const selector of [
             ".byline a[rel='author']",
             ".byline .user",
             "h4.byline a",
             ".heading.byline a",
             ".commenter",
             ".user"
-        ];
-
-        for (const selector of selectors) {
-            const nodes = getOwnedDescendants(commentEl, selector);
-
-            for (const el of nodes) {
+        ]) {
+            for (const el of getOwnedDescendants(commentEl, selector)) {
                 const text = getCleanText(el);
-
-                if (text) {
-                    return text;
-                }
+                if (text) return text;
             }
         }
 
-        const bylineNodes = getOwnedDescendants(commentEl, ".byline, h4, .heading");
-
-        for (const node of bylineNodes) {
+        for (const node of getOwnedDescendants(commentEl, ".byline, h4, .heading")) {
             const byline = getCleanText(node);
 
             if (byline) {
@@ -1163,33 +982,18 @@
     }
 
     function extractCommentDate(commentEl) {
-        const selectors = [
-            "time",
-            ".datetime",
-            ".posted",
-            ".date"
-        ];
-
-        for (const selector of selectors) {
-            const nodes = getOwnedDescendants(commentEl, selector);
-
-            for (const el of nodes) {
+        for (const selector of ["time", ".datetime", ".posted", ".date"]) {
+            for (const el of getOwnedDescendants(commentEl, selector)) {
                 const datetime = el.getAttribute("datetime");
 
-                if (datetime) {
-                    return datetime.slice(0, 10);
-                }
+                if (datetime) return datetime.slice(0, 10);
 
                 const text = getCleanText(el);
-
-                if (text) {
-                    return text;
-                }
+                if (text) return text;
             }
         }
 
-        const clone = cloneCommentWithoutNestedReplies(commentEl);
-        const text = getCleanText(clone);
+        const text = getCleanText(cloneCommentWithoutNestedReplies(commentEl));
 
         const dateMatch =
             text.match(/\d{4}-\d{2}-\d{2}/) ||
@@ -1200,24 +1004,12 @@
     }
 
     function extractCommentBody(commentEl) {
-        const selectors = [
-            ".userstuff",
-            ".comment-text",
-            ".comment-body",
-            "blockquote"
-        ];
-
-        for (const selector of selectors) {
-            const nodes = getOwnedDescendants(commentEl, selector);
-
-            for (const el of nodes) {
+        for (const selector of [".userstuff", ".comment-text", ".comment-body", "blockquote"]) {
+            for (const el of getOwnedDescendants(commentEl, selector)) {
                 if (el.closest(".byline, .actions, .navigation, .landmark")) continue;
 
                 const text = getCleanText(el);
-
-                if (text.length > 0) {
-                    return text;
-                }
+                if (text.length > 0) return text;
             }
         }
 
@@ -1235,11 +1027,7 @@
     function isRealCommentElement(el) {
         if (!el || el.nodeType !== Node.ELEMENT_NODE) return false;
 
-        if (
-            el.closest(
-                ".summary, .notes, .meta, .preface, #chapters, #workskin, .chapter, .actions, .navigation, .landmark"
-            )
-        ) {
+        if (el.closest(".summary, .notes, .meta, .preface, #chapters, #workskin, .chapter, .actions, .navigation, .landmark")) {
             return false;
         }
 
@@ -1262,30 +1050,15 @@
         const id = el.getAttribute("id") || "";
         const className = el.getAttribute("class") || "";
 
-        const hasCommentIdentity =
-            /comment_\d+/.test(id) ||
-            /\bcomment\b/.test(className);
-
-        const hasByline =
-            getOwnedDescendants(
-                el,
-                ".byline, h4.byline, .heading.byline, a[rel='author']"
-            ).length > 0;
-
-        const hasBody =
-            getOwnedDescendants(
-                el,
-                ".userstuff, blockquote, .comment-text, .comment-body"
-            ).length > 0;
+        const hasCommentIdentity = /comment_\d+/.test(id) || /\bcomment\b/.test(className);
+        const hasByline = getOwnedDescendants(el, ".byline, h4.byline, .heading.byline, a[rel='author']").length > 0;
+        const hasBody = getOwnedDescendants(el, ".userstuff, blockquote, .comment-text, .comment-body").length > 0;
 
         return hasCommentIdentity || (hasByline && hasBody);
     }
 
     function extractCommentElementsFromContainer(container) {
-        if (!container) return [];
-
         const candidates = getCommentCandidateElements(container).filter(isRealCommentElement);
-
         const uniqueComments = [];
         const seenKeys = new Set();
 
@@ -1325,9 +1098,7 @@
         const seenKeys = new Set();
 
         for (const root of roots) {
-            const comments = extractCommentElementsFromContainer(root);
-
-            for (const el of comments) {
+            for (const el of extractCommentElementsFromContainer(root)) {
                 const body = extractCommentBody(el);
                 const author = extractCommentAuthor(el);
                 const dateText = extractCommentDate(el);
@@ -1345,45 +1116,30 @@
 
     async function fetchCommentsFromUrl(url) {
         try {
-            if (SHOW_DEBUG) {
-                console.warn("[AO3 Paper] Trying comment URL:", url);
-            }
+            if (SHOW_DEBUG) console.warn("[AO3 Paper] Trying comment URL:", url);
 
             const response = await fetch(url, {
                 method: 'GET',
                 credentials: 'include',
                 cache: 'no-cache',
-                headers: {
-                    'X-Requested-With': 'XMLHttpRequest'
-                }
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
             });
 
             if (!response.ok) {
-                if (SHOW_DEBUG) {
-                    console.warn("[AO3 Paper] Comment fetch failed:", response.status, url);
-                }
-
+                if (SHOW_DEBUG) console.warn("[AO3 Paper] Comment fetch failed:", response.status, url);
                 return [];
             }
 
             const rawText = await response.text();
 
-            if (!rawText || rawText.length < 50) {
-                if (SHOW_DEBUG) {
-                    console.warn("[AO3 Paper] Empty comment response:", url);
-                }
-
-                return [];
-            }
+            if (!rawText || rawText.length < 50) return [];
 
             const docs = parseHtmlLikeDocuments(rawText);
             const all = [];
             const seenKeys = new Set();
 
             for (const doc of docs) {
-                const comments = extractCommentElementsFromDocument(doc);
-
-                for (const el of comments) {
+                for (const el of extractCommentElementsFromDocument(doc)) {
                     const body = extractCommentBody(el);
                     const author = extractCommentAuthor(el);
                     const dateText = extractCommentDate(el);
@@ -1396,30 +1152,22 @@
                 }
             }
 
-            if (SHOW_DEBUG) {
-                console.warn("[AO3 Paper] Parsed comments from URL:", all.length, url);
-            }
+            if (SHOW_DEBUG) console.warn("[AO3 Paper] Parsed comments from URL:", all.length, url);
 
             return all;
         } catch (err) {
-            if (SHOW_DEBUG) {
-                console.warn("[AO3 Paper] Comment fetch error:", err, url);
-            }
-
+            if (SHOW_DEBUG) console.warn("[AO3 Paper] Comment fetch error:", err, url);
             return [];
         }
     }
 
     async function fetchCommentElements() {
-        if (!FETCH_COMMENTS_IF_MISSING) {
-            return [];
-        }
+        if (!FETCH_COMMENTS_IF_MISSING) return [];
 
-        const urls = getCommentFetchUrls();
         const all = [];
         const seenKeys = new Set();
 
-        for (const url of urls) {
+        for (const url of getCommentFetchUrls()) {
             const comments = await fetchCommentsFromUrl(url);
 
             for (const el of comments) {
@@ -1434,106 +1182,69 @@
                 all.push(el);
             }
 
-            if (all.length > 0) {
-                break;
-            }
+            if (all.length > 0) break;
         }
 
         return all;
     }
 
     async function collectCommentReferenceBlocks() {
-        if (!SHOW_COMMENT_REFERENCES) {
-            return [];
-        }
+        if (!SHOW_COMMENT_REFERENCES) return [];
 
-        let uniqueComments = extractCommentElementsFromDocument(document);
+        let comments = extractCommentElementsFromDocument(document);
 
-        if (SHOW_DEBUG) {
-            console.warn("[AO3 Paper] Comments from current DOM:", uniqueComments.length);
-        }
+        if (SHOW_DEBUG) console.warn("[AO3 Paper] Comments from current DOM:", comments.length);
 
-        if (uniqueComments.length === 0) {
-            uniqueComments = await fetchCommentElements();
-        }
+        if (comments.length === 0) comments = await fetchCommentElements();
+        if (comments.length === 0) return [];
 
-        if (uniqueComments.length === 0) {
-            if (SHOW_DEBUG) {
-                console.warn("[AO3 Paper] No comment references extracted.");
-            }
+        const blocks = [makeHorizontalRule(), makeCommentReferenceTitle()];
 
-            return [];
-        }
-
-        const blocks = [];
-        blocks.push(makeHorizontalRule());
-        blocks.push(makeCommentReferenceTitle());
-
-        const selected = uniqueComments.slice(0, COMMENT_REFERENCE_LIMIT);
-
-        selected.forEach((commentEl, idx) => {
-            const author = extractCommentAuthor(commentEl);
-            const dateText = extractCommentDate(commentEl);
-            const body = extractCommentBody(commentEl);
-
-            blocks.push(makeCommentReferenceItem(idx + 1, author, dateText, body));
+        comments.slice(0, COMMENT_REFERENCE_LIMIT).forEach((commentEl, idx) => {
+            blocks.push(
+                makeCommentReferenceItem(
+                    idx + 1,
+                    extractCommentAuthor(commentEl),
+                    extractCommentDate(commentEl),
+                    extractCommentBody(commentEl)
+                )
+            );
         });
 
-        if (uniqueComments.length > COMMENT_REFERENCE_LIMIT) {
+        if (comments.length > COMMENT_REFERENCE_LIMIT) {
             const p = document.createElement("p");
             p.className = "ao3-reference";
-            p.textContent = `[${COMMENT_REFERENCE_LIMIT + 1}] Additional AO3 comments omitted. Total comments found ${uniqueComments.length}.`;
+            p.textContent = `[${COMMENT_REFERENCE_LIMIT + 1}] Additional AO3 comments omitted. Total comments found ${comments.length}.`;
             blocks.push(p);
         }
 
         return blocks;
     }
 
-    /* ============================================================
-     * Chapter text extraction
-     * ============================================================ */
-
     function findChapterTextRoots() {
         const roots = [];
 
-        const selectors = [
-            "#chapters .userstuff",
-            "#workskin .userstuff",
-            ".chapter .userstuff",
-            ".userstuff"
-        ];
-
-        for (const selector of selectors) {
-            const nodes = Array.from(document.querySelectorAll(selector)).filter((el) => {
-                if (shouldSkipElement(el)) return false;
-                return getCleanText(el).length > 120;
-            });
+        for (const selector of ["#chapters .userstuff", "#workskin .userstuff", ".chapter .userstuff", ".userstuff"]) {
+            const nodes = Array.from(document.querySelectorAll(selector)).filter(
+                (el) => !shouldSkipElement(el) && getCleanText(el).length > 120
+            );
 
             if (nodes.length > 0) {
                 for (const node of nodes) {
-                    if (!roots.includes(node)) {
-                        roots.push(node);
-                    }
+                    if (!roots.includes(node)) roots.push(node);
                 }
-
                 break;
             }
         }
 
-        if (roots.length > 0) {
-            return roots;
-        }
+        if (roots.length > 0) return roots;
 
         const fallback =
             document.querySelector("#chapters") ||
             document.querySelector("#workskin") ||
             document.querySelector(".chapter");
 
-        if (fallback && getCleanText(fallback).length > 200) {
-            return [fallback];
-        }
-
-        return [];
+        return fallback && getCleanText(fallback).length > 200 ? [fallback] : [];
     }
 
     function paragraphFromText(text) {
@@ -1543,82 +1254,49 @@
     }
 
     function headingFromText(text, level) {
-        const tag = level || "h2";
-        const h = document.createElement(tag);
+        const h = document.createElement(level || "h2");
         h.textContent = normalizeText(text);
         return h;
     }
 
     function collectBlocksFromParagraphs(root) {
         const blocks = [];
-        const children = Array.from(root.childNodes);
 
-        for (const node of children) {
+        for (const node of Array.from(root.childNodes)) {
             if (node.nodeType === Node.TEXT_NODE) {
                 const text = normalizeText(node.textContent);
 
-                if (text.length > 0) {
-                    blocks.push(paragraphFromText(text));
-                }
-
+                if (text) blocks.push(paragraphFromText(text));
                 continue;
             }
 
-            if (node.nodeType !== Node.ELEMENT_NODE) {
-                continue;
-            }
-
-            if (shouldSkipElement(node)) {
-                continue;
-            }
+            if (node.nodeType !== Node.ELEMENT_NODE || shouldSkipElement(node)) continue;
 
             const tag = node.tagName.toLowerCase();
 
-            if (["script", "style", "iframe", "noscript"].includes(tag)) {
-                continue;
-            }
+            if (["script", "style", "iframe", "noscript", "br"].includes(tag)) continue;
 
             if (tag === "hr") {
                 blocks.push(makeHorizontalRule());
                 continue;
             }
 
-            if (tag === "br") {
-                continue;
-            }
-
             if (tag === "p") {
-                const parts = htmlToTextParts(node, { keepNotes: true });
-
-                for (const part of parts) {
-                    if (part === "[[AO3_HR]]") {
-                        blocks.push(makeHorizontalRule());
-                        continue;
-                    }
-
-                    if (part.length > 0) {
-                        blocks.push(paragraphFromText(part));
-                    }
+                for (const part of htmlToTextParts(node, { keepNotes: true })) {
+                    if (part === "[[AO3_HR]]") blocks.push(makeHorizontalRule());
+                    else if (part) blocks.push(paragraphFromText(part));
                 }
-
                 continue;
             }
 
             if (["h1", "h2", "h3", "h4"].includes(tag)) {
                 const text = getCleanText(node);
 
-                if (text.length > 0) {
-                    blocks.push(headingFromText(text, tag));
-                }
-
+                if (text) blocks.push(headingFromText(text, tag));
                 continue;
             }
 
-            const nested = collectBlocksFromParagraphs(node);
-
-            for (const item of nested) {
-                blocks.push(item);
-            }
+            blocks.push(...collectBlocksFromParagraphs(node));
         }
 
         return blocks;
@@ -1626,39 +1304,26 @@
 
     function collectBlocksFromBreakText(root) {
         const blocks = [];
-        const parts = htmlToTextParts(root, { keepNotes: true });
 
-        for (const part of parts) {
+        for (const part of htmlToTextParts(root, { keepNotes: true })) {
             const lower = part.toLowerCase();
 
-            if (part === "[[AO3_HR]]") {
-                blocks.push(makeHorizontalRule());
-                continue;
-            }
-
-            if (lower === "notes") continue;
-            if (lower === "chapter text") continue;
-            if (lower === "end notes") continue;
-
-            blocks.push(paragraphFromText(part));
+            if (part === "[[AO3_HR]]") blocks.push(makeHorizontalRule());
+            else if (!["notes", "chapter text", "end notes"].includes(lower)) blocks.push(paragraphFromText(part));
         }
 
         return blocks;
     }
 
     function collectContentBlocks() {
-        const roots = findChapterTextRoots();
         const allBlocks = [];
 
-        for (const root of roots) {
-            let blocks = collectBlocksFromParagraphs(root);
-
-            if (blocks.length === 0) {
-                blocks = collectBlocksFromBreakText(root);
-            }
+        for (const root of findChapterTextRoots()) {
+            const paragraphBlocks = collectBlocksFromParagraphs(root);
+            const blocks = paragraphBlocks.length ? paragraphBlocks : collectBlocksFromBreakText(root);
 
             for (const block of blocks) {
-                const tag = block.tagName ? block.tagName.toLowerCase() : "";
+                const tag = block.tagName?.toLowerCase() || "";
 
                 if (tag === "hr") {
                     allBlocks.push(block);
@@ -1668,12 +1333,7 @@
                 const text = getCleanText(block);
                 const lower = text.toLowerCase();
 
-                if (!text) continue;
-                if (lower === "notes") continue;
-                if (lower === "chapter text") continue;
-                if (lower === "end notes") continue;
-
-                allBlocks.push(block);
+                if (text && !["notes", "chapter text", "end notes"].includes(lower)) allBlocks.push(block);
             }
         }
 
@@ -1681,37 +1341,23 @@
     }
 
     function splitParagraphNode(p) {
-        const text = getCleanText(p);
-        const words = text.split(/\s+/);
+        const words = getCleanText(p).split(/\s+/);
         const chunks = [];
-        const WORDS_PER_CHUNK = 90;
 
-        for (let i = 0; i < words.length; i += WORDS_PER_CHUNK) {
-            chunks.push(paragraphFromText(words.slice(i, i + WORDS_PER_CHUNK).join(" ")));
+        for (let i = 0; i < words.length; i += 90) {
+            chunks.push(paragraphFromText(words.slice(i, i + 90).join(" ")));
         }
 
         return chunks;
     }
 
-    /* ============================================================
-     * Page building and pagination
-     * ============================================================ */
-
     function createPage(pageIndex, meta) {
         const page = document.createElement("div");
         page.className = "ao3-paper-page";
 
-        if (pageIndex === 1) {
-            page.classList.add("first-page");
-        }
-
-        if (SHOW_RUNNING_HEADER) {
-            page.appendChild(makeRunningHeader(pageIndex));
-        }
-
-        if (SHOW_SIDE_STAMP && (SIDE_STAMP_EVERY_PAGE || pageIndex === 1)) {
-            page.appendChild(makeSideStamp(meta));
-        }
+        if (pageIndex === 1) page.classList.add("first-page");
+        if (SHOW_RUNNING_HEADER) page.appendChild(makeRunningHeader(pageIndex));
+        if (SHOW_SIDE_STAMP && (SIDE_STAMP_EVERY_PAGE || pageIndex === 1)) page.appendChild(makeSideStamp(meta));
 
         const content = document.createElement("div");
         content.className = "ao3-paper-content";
@@ -1720,18 +1366,12 @@
         number.className = "ao3-paper-number";
         number.textContent = String(pageIndex);
 
-        page.appendChild(content);
-        page.appendChild(number);
+        page.append(content, number);
 
         return { page, content };
     }
 
     function pageOverflow(content) {
-        /*
-         * Multi-column overflow is noisy. A small scrollWidth increase may be
-         * caused by reference indentation or long words rather than true page
-         * overflow. This threshold avoids premature page breaks.
-         */
         const overflowBy = content.scrollWidth - content.clientWidth;
         const threshold = Math.max(80, content.clientWidth * 0.08);
 
@@ -1743,9 +1383,7 @@
         let current = createPage(pageIndex, meta);
 
         view.appendChild(current.page);
-
-        const frontMatter = makeFrontMatter(meta);
-        current.content.appendChild(frontMatter);
+        current.content.appendChild(makeFrontMatter(meta));
 
         function newPage() {
             pageIndex += 1;
@@ -1756,20 +1394,15 @@
         for (const block of blocks) {
             current.content.appendChild(block);
 
-            if (!pageOverflow(current.content)) {
-                continue;
-            }
+            if (!pageOverflow(current.content)) continue;
 
             current.content.removeChild(block);
 
-            const tag = block.tagName ? block.tagName.toLowerCase() : "";
+            const tag = block.tagName?.toLowerCase() || "";
             const wordCount = getCleanText(block).split(/\s+/).length;
-            const isLongParagraph = tag === "p" && wordCount > 100;
 
-            if (isLongParagraph) {
-                const chunks = splitParagraphNode(block);
-
-                for (const chunk of chunks) {
+            if (tag === "p" && wordCount > 100) {
+                for (const chunk of splitParagraphNode(block)) {
                     current.content.appendChild(chunk);
 
                     if (pageOverflow(current.content)) {
@@ -1782,29 +1415,22 @@
                 newPage();
                 current.content.appendChild(block);
 
-                if (pageOverflow(current.content)) {
-                    block.style.fontSize = "95%";
-                }
+                if (pageOverflow(current.content)) block.style.fontSize = "95%";
             }
         }
-
-        return pageIndex;
     }
 
     async function buildView() {
-        const oldView = document.getElementById(VIEW_ID);
-        if (oldView) oldView.remove();
+        document.getElementById(VIEW_ID)?.remove();
 
         const meta = getAO3Meta();
         const blocks = collectContentBlocks();
-        const commentReferenceBlocks = await collectCommentReferenceBlocks();
+        const refs = await collectCommentReferenceBlocks();
 
         if (blocks.length === 0) {
             alert("没有提取到正文。请确认页面已经完整加载，或关闭其他 AO3 样式脚本后再刷新。");
             return false;
         }
-
-        const finalBlocks = blocks.concat(commentReferenceBlocks);
 
         const view = document.createElement("div");
         view.id = VIEW_ID;
@@ -1812,52 +1438,34 @@
         if (SHOW_DEBUG) {
             const debug = document.createElement("div");
             debug.className = "ao3-paper-debug";
-            debug.textContent = `paper mode loaded, blocks ${finalBlocks.length}, references ${commentReferenceBlocks.length}`;
+            debug.textContent = `paper mode loaded, blocks ${blocks.length + refs.length}, references ${refs.length}`;
             view.appendChild(debug);
         }
 
-        const main = document.querySelector("#main") || document.body;
-        main.appendChild(view);
-
-        buildPages(finalBlocks, view, meta);
+        (document.querySelector("#main") || document.body).appendChild(view);
+        buildPages(blocks.concat(refs), view, meta);
 
         return true;
     }
-
-    /* ============================================================
-     * Zoom controls
-     * ============================================================ */
 
     function clampZoom(value) {
         return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
     }
 
     function getSavedZoom() {
-        const raw = localStorage.getItem(ZOOM_STORAGE_KEY);
-        const value = Number(raw);
-
-        if (!Number.isFinite(value)) {
-            return DEFAULT_ZOOM;
-        }
-
-        return clampZoom(value);
+        const value = Number(localStorage.getItem(ZOOM_STORAGE_KEY));
+        return Number.isFinite(value) ? clampZoom(value) : DEFAULT_ZOOM;
     }
 
     function setPaperZoom(value) {
         const zoom = clampZoom(value);
 
-        document.documentElement.style.setProperty(
-            "--ao3-paper-zoom",
-            String(zoom)
-        );
-
+        document.documentElement.style.setProperty("--ao3-paper-zoom", String(zoom));
         localStorage.setItem(ZOOM_STORAGE_KEY, String(zoom));
 
         const label = document.getElementById("ao3-paper-zoom-label");
 
-        if (label) {
-            label.textContent = `${Math.round(zoom * 100)}%`;
-        }
+        if (label) label.textContent = `${Math.round(zoom * 100)}%`;
     }
 
     function zoomIn() {
@@ -1871,10 +1479,6 @@
     function resetZoom() {
         setPaperZoom(DEFAULT_ZOOM);
     }
-
-    /* ============================================================
-     * Enable and disable
-     * ============================================================ */
 
     async function enableMode() {
         addStyle();
@@ -1895,25 +1499,13 @@
     function disableMode() {
         document.body.classList.remove("ao3-arxiv-paper-mode");
         localStorage.setItem(STORAGE_KEY, "0");
-
-        const view = document.getElementById(VIEW_ID);
-
-        if (view) {
-            view.remove();
-        }
+        document.getElementById(VIEW_ID)?.remove();
     }
 
     function toggleMode() {
-        if (document.body.classList.contains("ao3-arxiv-paper-mode")) {
-            disableMode();
-        } else {
-            enableMode();
-        }
+        if (document.body.classList.contains("ao3-arxiv-paper-mode")) disableMode();
+        else enableMode();
     }
-
-    /* ============================================================
-     * Floating toolbar
-     * ============================================================ */
 
     function addFloatingToolbar() {
         if (document.getElementById(TOOLBAR_ID)) return;
@@ -1921,49 +1513,34 @@
         const toolbar = document.createElement("div");
         toolbar.id = TOOLBAR_ID;
 
-        const zoomOutBtn = document.createElement("button");
-        zoomOutBtn.textContent = "A−";
-        zoomOutBtn.title = "Zoom out";
-        zoomOutBtn.addEventListener("click", zoomOut);
+        const out = document.createElement("button");
+        out.textContent = "A−";
+        out.title = "Zoom out";
+        out.addEventListener("click", zoomOut);
 
-        const zoomLabel = document.createElement("span");
-        zoomLabel.id = "ao3-paper-zoom-label";
+        const label = document.createElement("span");
+        label.id = "ao3-paper-zoom-label";
 
-        const zoomInBtn = document.createElement("button");
-        zoomInBtn.textContent = "A+";
-        zoomInBtn.title = "Zoom in";
-        zoomInBtn.addEventListener("click", zoomIn);
+        const inn = document.createElement("button");
+        inn.textContent = "A+";
+        inn.title = "Zoom in";
+        inn.addEventListener("click", zoomIn);
 
-        const resetBtn = document.createElement("button");
-        resetBtn.textContent = "Reset";
-        resetBtn.title = "Reset zoom";
-        resetBtn.addEventListener("click", resetZoom);
+        const reset = document.createElement("button");
+        reset.textContent = "Reset";
+        reset.title = "Reset zoom";
+        reset.addEventListener("click", resetZoom);
 
-        const paperBtn = document.createElement("button");
-        paperBtn.id = BUTTON_ID;
-        paperBtn.textContent = "Paper";
-        paperBtn.title = "Toggle paper mode";
-        paperBtn.addEventListener("click", toggleMode);
+        const paper = document.createElement("button");
+        paper.id = "ao3-arxiv-paper-toggle-button";
+        paper.textContent = "Paper";
+        paper.title = "Toggle paper mode";
+        paper.addEventListener("click", toggleMode);
 
-        toolbar.appendChild(zoomOutBtn);
-        toolbar.appendChild(zoomLabel);
-        toolbar.appendChild(zoomInBtn);
-        toolbar.appendChild(resetBtn);
-        toolbar.appendChild(paperBtn);
-
+        toolbar.append(out, label, inn, reset, paper);
         document.body.appendChild(toolbar);
-
         setPaperZoom(getSavedZoom());
     }
-
-    /* ============================================================
-     * Shortcuts
-     *
-     * Option plus P toggles paper mode on macOS.
-     * Option plus Equal zooms in.
-     * Option plus Minus zooms out.
-     * Option plus 0 resets zoom.
-     * ============================================================ */
 
     document.addEventListener("keydown", function (event) {
         if (event.altKey && event.code === "KeyP") {
@@ -1991,31 +1568,9 @@
         addStyle();
         addFloatingToolbar();
 
-        const saved = localStorage.getItem(STORAGE_KEY);
-
-        if (saved !== "0") {
-            enableMode();
-        }
+        if (localStorage.getItem(STORAGE_KEY) !== "0") enableMode();
     }
 
-    if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", boot);
-    } else {
-        boot();
-    }
-})();// ==UserScript==
-// @name         New Userscript
-// @namespace    http://tampermonkey.net/
-// @version      2026-07-02
-// @description  try to take over the world!
-// @author       You
-// @match        https://*/*
-// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
-// @grant        none
-// ==/UserScript==
-
-(function () {
-    'use strict';
-
-    // Your code here...
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+    else boot();
 })();
