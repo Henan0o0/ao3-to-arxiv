@@ -5,6 +5,10 @@
 // @description  Convert AO3 work pages into an arXiv like local paper layout with notes separator, better paragraph extraction, pagination, side stamp, header, and zoom controls
 // @match        https://archiveofourown.org/works/*
 // @match        https://www.archiveofourown.org/works/*
+// @match        https://archiveofourown.gay/works/*
+// @match        https://www.archiveofourown.gay/works/*
+// @match        https://archive.transformativeworks.org/works/*
+// @match        https://www.archive.transformativeworks.org/works/*
 // @run-at       document-idle
 // @grant        none
 // ==/UserScript==
