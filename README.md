@@ -45,7 +45,7 @@ Two Tampermonkey userscripts that turn AO3 work pages into local academic-paper-
 - `archiveofourown.gay`
 - `archive.transformativeworks.org`
 
-在有条件的情况下，建议优先使用 AO3 原站（archiveofourown.org），支持作者和平台的正常运营。
+在有条件的情况下，建议优先使用 AO3 原站（archiveofourown.org），支持创作者和平台。
 
 ## 隐私说明（两个脚本通用）
 
@@ -276,9 +276,7 @@ On macOS, Option is the Alt key.
 In addition to the main AO3 site, both scripts also work on the following mirrors:
 
 - `archiveofourown.gay`
-- `www.archiveofourown.gay`
 - `archive.transformativeworks.org`
-- `www.archive.transformativeworks.org`
 
 Where possible, please use the main AO3 site (archiveofourown.org) to support the authors and the platform.
 
