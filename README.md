@@ -38,6 +38,15 @@ Two Tampermonkey userscripts that turn AO3 work pages into local academic-paper-
 
 在 macOS 上，Option 键就是 Alt 键。
 
+## 支持的镜像站点（两个脚本通用）
+
+两个脚本除原站外，还支持以下 AO3 镜像：
+
+- `archiveofourown.gay`
+- `archive.transformativeworks.org`
+
+在有条件的情况下，建议优先使用 AO3 原站（archiveofourown.org），支持作者和平台的正常运营。
+
 ## 隐私说明（两个脚本通用）
 
 脚本只在你的浏览器中运行，不会把任何数据发送到外部服务器，不会记录阅读行为，不会把 AO3 内容保存到页面外部，不会修改 AO3 服务器上的内容，不会转载、导出或复制作品。脚本只在 localStorage 中保存本地界面状态（阅读模式是否开启、当前缩放比例）。
@@ -261,6 +270,17 @@ Install a userscript manager first. Tampermonkey is recommended.
 7. Click the toolbar button in the bottom-right corner
 
 On macOS, Option is the Alt key.
+
+## Supported mirror sites (same for both scripts)
+
+In addition to the main AO3 site, both scripts also work on the following mirrors:
+
+- `archiveofourown.gay`
+- `www.archiveofourown.gay`
+- `archive.transformativeworks.org`
+- `www.archive.transformativeworks.org`
+
+Where possible, please use the main AO3 site (archiveofourown.org) to support the authors and the platform.
 
 ## Privacy (same for both scripts)
 
